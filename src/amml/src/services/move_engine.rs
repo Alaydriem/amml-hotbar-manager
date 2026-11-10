@@ -7,7 +7,9 @@ use crate::game::{ContainerIds, RequestAction, RequestEncoder, SlotRef};
 use crate::traits::{MovePredictor, PacketSink};
 use crate::types::{MoveEnd, MoveOutcome};
 
-// a batch: every move of an action in one packet, each its own request. Before the send `sent_at` is None
+// a batch: every move of an action in one packet, each its own request. Before the send `sent_at` is None. A batch
+// cancelled after its send is `detached`: its end was reported, but the server still does its moves, so it is kept
+// until its answers or its time is up and then settled without a second report
 #[derive(Debug, Clone)]
 struct Batch {
     moves: Vec<ItemMove>,
@@ -15,6 +17,7 @@ struct Batch {
     answers: Vec<Option<bool>>,
     predicted: Vec<bool>,
     sent_at: Option<f64>,
+    detached: bool,
 }
 
 // the request in flight: its id, its move, when it was sent, and whether the client shows it already
@@ -105,8 +108,26 @@ impl<P: MovePredictor> MoveEngine<P> {
         self.start(now, Vec::new(), snapshot, kind);
         self.total = moves.len();
         self.outcome = None;
-        self.batch = Some(Batch { moves, ids: Vec::new(), answers: Vec::new(), predicted: Vec::new(), sent_at: None });
+        self.batch = Some(Batch {
+            moves,
+            ids: Vec::new(),
+            answers: Vec::new(),
+            predicted: Vec::new(),
+            sent_at: None,
+            detached: false,
+        });
         true
+    }
+
+    // ends a sent batch whose answers did not all come within BATCH_TIMEOUT_SECONDS (a missing answer counts as
+    // refused). The rotation calls it on every tick, so a cancelled batch ends too
+    pub fn expire(&mut self, now: f64) {
+        let Some(batch) = self.batch.as_ref() else { return };
+        let Some(sent_at) = batch.sent_at else { return };
+        if now - sent_at >= Self::BATCH_TIMEOUT_SECONDS {
+            curia::info!("item stack batch not fully answered", { requests: batch.ids.len() as i64 });
+            self.settle_batch();
+        }
     }
 
     // once per client tick, with the slots the client shows now: ends a request that waited too long, or sends the
@@ -174,13 +195,22 @@ impl<P: MovePredictor> MoveEngine<P> {
     }
 
     // drops the action: the queue, and the request in flight with its prediction undone. Answers that come later are
-    // ignored. Nothing happens while no action runs
+    // ignored. A batch already sent cannot be called back: the end is reported now, but the batch stays (busy) and is
+    // settled on its answers or by `expire`, so the client shows what the server did. Nothing happens while no action
+    // runs
     pub fn cancel(&mut self) {
         if !self.busy() {
             return;
         }
-        if let Some(batch) = self.batch.take() {
-            self.undo_batch(&batch);
+        if let Some(batch) = self.batch.as_mut()
+            && batch.sent_at.is_some()
+        {
+            if !batch.detached {
+                batch.detached = true;
+                self.outcome =
+                    Some(MoveOutcome { accepted: self.accepted, total: self.total, end: MoveEnd::Cancelled });
+            }
+            return;
         }
         if let Some(flight) = self.in_flight
             && flight.predicted
@@ -229,11 +259,8 @@ impl<P: MovePredictor> MoveEngine<P> {
     // shows them all; after the send it ends the batch once the time for the answers is up
     fn tick_batch(&mut self, now: f64, live: &SlotModel, sink: &mut dyn PacketSink) {
         let Some(batch) = self.batch.as_ref() else { return };
-        if let Some(sent_at) = batch.sent_at {
-            if now - sent_at >= Self::BATCH_TIMEOUT_SECONDS {
-                curia::info!("item stack batch not fully answered", { requests: batch.ids.len() as i64 });
-                self.settle_batch();
-            }
+        if batch.sent_at.is_some() {
+            self.expire(now);
             return;
         }
         let moves = batch.moves.clone();
@@ -287,7 +314,7 @@ impl<P: MovePredictor> MoveEngine<P> {
                 self.apply_expected(mv);
             }
             self.accepted = batch.moves.len();
-            self.finish(MoveEnd::Done);
+            self.end_batch(&batch, MoveEnd::Done);
             return;
         };
         let timed_out = batch.answers.iter().any(Option::is_none);
@@ -308,7 +335,21 @@ impl<P: MovePredictor> MoveEngine<P> {
             self.accepted += 1;
         }
         let mv = batch.moves[refused];
-        self.finish(MoveEnd::Rejected { mv, index: refused, timed_out, undone });
+        self.end_batch(&batch, MoveEnd::Rejected { mv, index: refused, timed_out, undone });
+    }
+
+    // the end of a settled batch: reported, unless a cancel reported it already
+    fn end_batch(&mut self, batch: &Batch, end: MoveEnd) {
+        if batch.detached {
+            if end != MoveEnd::Done {
+                curia::info!("a cancelled item stack batch was not fully accepted", {
+                    accepted: self.accepted as i64,
+                    total: self.total as i64
+                });
+            }
+            return;
+        }
+        self.finish(end);
     }
 
     // puts back every prediction of `batch`, newest first; true when something was put back

@@ -23,6 +23,10 @@ pub struct ButtonPainter {
     queue_warned: bool,
 }
 
+// DIAG (temporary): the probed textures, logged again later, and the paint count
+static DIAG_LATER: std::sync::Mutex<Vec<(String, usize)>> = std::sync::Mutex::new(Vec::new());
+static DIAG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 // What one batch draws with
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextureKey {
@@ -311,6 +315,8 @@ impl ButtonPainter {
         }
         // SAFETY: forwarded to the caller
         unsafe { self.ensure_textures(ctx) };
+        // DIAG (temporary)
+        Self::diag_later();
         let Some(set) = self.textures.as_ref() else { return Vec::new() };
         // SAFETY: the live context, whose vtable holds drawImage and flushImages at the entries' slots
         let draw = unsafe { RawObject::slot(ctx, self.calls.draw_image_slot) };
@@ -460,20 +466,51 @@ impl ButtonPainter {
             let words = unsafe { Self::diag_words(ptr) };
             Self::warn(&format!("DIAG glyph path={path} png_exists={exists} ptr={ptr:#x} words=[{words}]"));
         }
+        // round 2: copy sort.png to places the game may allow, and load it from each (Raw, file system 2)
+        let source = std::path::PathBuf::from(format!("{dir}/sort.png"));
+        let instance = source.ancestors().nth(6).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        let data =
+            std::env::var("LOCALAPPDATA").map(|p| format!("{}/amml/data", p.replace('\\', "/"))).unwrap_or_default();
+        for folder in [format!("{instance}/hm_probe"), format!("{data}/hm_probe")] {
+            let copied =
+                std::fs::create_dir_all(&folder).and_then(|()| std::fs::copy(&source, format!("{folder}/sort.png")));
+            Self::warn(&format!("DIAG copy to {folder}: {copied:?}"));
+        }
         let probes = [
-            (format!("{dir}/__diag_missing__"), Self::FS_RAW),
-            (format!("{dir}/sort.png"), Self::FS_RAW),
-            (format!("{dir}/sort"), Self::FS_USER_PACKAGE),
-            (format!("{dir}/sort"), 1),
-            (format!("{dir}/sort"), 3),
-            ("textures/ui/__diag_missing__".to_string(), Self::FS_USER_PACKAGE),
+            format!("{instance}/hm_probe/sort"),
+            format!("{data}/hm_probe/sort"),
+            "hm_probe/sort".to_string(),
+            "mods/amml/@alaydriem/hotbar-manager/textures/sort".to_string(),
+            format!("{dir}/sort").replace('/', "\\"),
         ];
-        for (path, fs) in probes {
+        for path in probes {
             // SAFETY: forwarded to the caller of `load`
-            let ptr = unsafe { self.texture(ctx, heap, &path, fs) }.map_or(0, |t| t.texture);
+            let ptr = unsafe { self.texture(ctx, heap, &path, Self::FS_RAW) }.map_or(0, |t| t.texture);
             // SAFETY: as above
             let words = unsafe { Self::diag_words(ptr) };
-            Self::warn(&format!("DIAG probe fs={fs} path={path} ptr={ptr:#x} words=[{words}]"));
+            Self::warn(&format!("DIAG probe2 path={path} ptr={ptr:#x} words=[{words}]"));
+            DIAG_LATER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((path, ptr));
+        }
+        if let Some(Some(sort)) = glyphs.first() {
+            DIAG_LATER
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((format!("{dir}/sort (glyph)"), sort.texture));
+        }
+    }
+
+    // DIAG (temporary): logs the probed textures again, once, about 4 s of paints after the load, in case a load
+    // finishes late
+    #[allow(unsafe_code)]
+    fn diag_later() {
+        let count = DIAG_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count != 240 {
+            return;
+        }
+        for (path, ptr) in DIAG_LATER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
+            // SAFETY: the pointers came from getTexture and are kept alive (never released)
+            let words = unsafe { Self::diag_words(*ptr) };
+            Self::warn(&format!("DIAG later path={path} ptr={ptr:#x} words=[{words}]"));
         }
     }
 

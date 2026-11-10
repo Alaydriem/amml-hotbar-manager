@@ -166,7 +166,8 @@ fn a_screen_that_opens_mid_run_cancels_the_engine_and_closes() {
 
     let end = runner.tick(1.3, false, Some(&source), &mut engine, &mut link);
 
-    assert!(!engine.busy());
+    // the close goes out at once; the engine keeps the sent batch until its answers come or its time is up
+    assert!(engine.busy());
     assert_eq!(link.sent, [Sent::Open, Sent::Request, Sent::Close(CONTAINER)]);
     let Some(RotationEnd::Moves(outcome)) = end else { panic!("{end:?}") };
     assert_eq!(outcome.end, MoveEnd::Cancelled);
@@ -336,4 +337,17 @@ fn a_full_rotation_goes_out_as_one_request_packet() {
     assert_eq!(link.sent, [Sent::Open, Sent::Request]);
     // 9 columns of 3 swaps, one request each, in one payload whose first byte is the request count
     assert_eq!(link.requests[0][0], 27);
+}
+
+#[test]
+fn an_idle_runner_lets_a_cancelled_batch_expire() {
+    let (mut link, mut engine) = (FakeLink::default(), engine());
+    let source = screen(one_stack());
+    let mut runner = running(&mut link, &mut engine, &source);
+    runner.tick(1.3, false, Some(&source), &mut engine, &mut link);
+
+    let late = 1.2 + MoveEngine::<FakePredictor>::BATCH_TIMEOUT_SECONDS;
+    assert_eq!(runner.tick(late, true, Some(&source), &mut engine, &mut link), None);
+
+    assert!(!engine.busy());
 }

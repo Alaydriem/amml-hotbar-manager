@@ -5,6 +5,7 @@ use hotbar_manager_core::services::SlotModel;
 use hotbar_manager_core::structs::{ItemMove, ScreenKind, Side, SlotAddr, SlotItem};
 
 use crate::support::fake_sender::{FakePredictor, FakeSender};
+use crate::support::model_predictor::ModelPredictor;
 
 const FIRST: i32 = MoveEngine::<FakePredictor>::FIRST_REQUEST_ID;
 const SECOND: i32 = FIRST - 2;
@@ -661,20 +662,6 @@ fn unanswered_requests_count_as_refused_after_the_batch_timeout() {
 }
 
 #[test]
-fn cancel_mid_batch_undoes_every_prediction_in_reverse() {
-    let (mut engine, _sink) = sent_batch();
-    let [m1, m2, m3]: [ItemMove; 3] = column_down().try_into().unwrap();
-
-    engine.cancel();
-    engine.on_response(FIRST, true);
-
-    assert_eq!(engine.predictor().undone, vec![m3, m2, m1]);
-    assert!(engine.predictor().confirmed.is_empty());
-    assert_eq!(engine.take_outcome(), Some(MoveOutcome { accepted: 0, total: 3, end: MoveEnd::Cancelled }));
-    assert!(engine.take_outcome().is_none());
-}
-
-#[test]
 fn a_batch_waits_for_the_live_slots_then_goes_stale() {
     let mut engine = engine();
     let mut sink = FakeSender::default();
@@ -706,4 +693,123 @@ fn a_failed_send_sends_nothing_and_predicts_nothing() {
         engine.take_outcome(),
         Some(MoveOutcome { accepted: 0, total: 3, end: MoveEnd::NotSent { mv: column_down()[0], index: 0 } })
     );
+}
+
+#[test]
+fn cancel_after_the_send_ends_at_once_but_keeps_the_batch_until_its_answers() {
+    let (mut engine, _sink) = sent_batch();
+
+    engine.cancel();
+
+    // the server still does the moves: nothing is undone, and no new action may start yet
+    assert_eq!(engine.take_outcome(), Some(MoveOutcome { accepted: 0, total: 3, end: MoveEnd::Cancelled }));
+    assert!(engine.predictor().undone.is_empty());
+    assert!(engine.busy());
+
+    engine.on_response(FIRST, true);
+    engine.on_response(SECOND, true);
+    engine.on_response(THIRD, true);
+
+    assert!(!engine.busy());
+    assert_eq!(engine.predictor().confirmed, column_down());
+    assert_eq!(engine.expected(), &applied(&rows(), &column_down()));
+    // the cancel already reported the end
+    assert!(engine.take_outcome().is_none());
+}
+
+#[test]
+fn a_cancelled_batch_with_no_answers_expires_after_the_batch_timeout() {
+    let (mut engine, _sink) = sent_batch();
+    let [m1, m2, m3]: [ItemMove; 3] = column_down().try_into().unwrap();
+    engine.cancel();
+    engine.take_outcome();
+
+    engine.expire(MoveEngine::<FakePredictor>::BATCH_TIMEOUT_SECONDS - 0.01);
+    assert!(engine.busy());
+    engine.expire(MoveEngine::<FakePredictor>::BATCH_TIMEOUT_SECONDS);
+
+    assert!(!engine.busy());
+    assert_eq!(engine.predictor().undone, vec![m3, m2, m1]);
+    assert!(engine.take_outcome().is_none());
+}
+
+#[test]
+fn cancel_before_the_send_ends_at_once_and_sends_nothing() {
+    let mut engine = engine();
+    let mut sink = FakeSender::default();
+    assert!(engine.start_batch(0.0, column_down(), &rows(), ScreenKind::PlayerInventory));
+
+    engine.cancel();
+    engine.tick(0.0, &rows(), &mut sink);
+
+    assert!(!engine.busy());
+    assert!(sink.sent.is_empty());
+    assert_eq!(engine.take_outcome(), Some(MoveOutcome { accepted: 0, total: 3, end: MoveEnd::Cancelled }));
+}
+
+// --- the client view against the server, with the rules of the real predictor ---
+
+fn view_batch(snapshot: &SlotModel, moves: &[ItemMove]) -> MoveEngine<ModelPredictor> {
+    let mut engine = MoveEngine::new(ModelPredictor::new(snapshot.clone()));
+    let mut sink = FakeSender::default();
+    assert!(engine.start_batch(0.0, moves.to_vec(), snapshot, ScreenKind::PlayerInventory));
+    engine.tick(0.0, snapshot, &mut sink);
+    assert_eq!(sink.sent.len(), 1);
+    engine
+}
+
+#[test]
+fn the_view_shows_the_whole_batch_when_every_move_is_accepted() {
+    let mut engine = view_batch(&rows(), &column_down());
+
+    engine.on_response(FIRST, true);
+    engine.on_response(SECOND, true);
+    engine.on_response(THIRD, true);
+
+    assert_eq!(engine.predictor().view, applied(&rows(), &column_down()));
+}
+
+#[test]
+fn the_view_shows_only_the_accepted_moves_when_one_mid_batch_is_refused() {
+    let [m1, _m2, m3]: [ItemMove; 3] = column_down().try_into().unwrap();
+    let mut engine = view_batch(&rows(), &column_down());
+
+    engine.on_response(FIRST, true);
+    engine.on_response(SECOND, false);
+    engine.on_response(THIRD, true);
+
+    assert_eq!(engine.predictor().view, applied(&rows(), &[m1, m3]));
+    assert_eq!(&engine.predictor().view, engine.expected());
+}
+
+#[test]
+fn the_view_shows_only_the_answered_moves_after_the_batch_timeout() {
+    let [m1, _m2, _m3]: [ItemMove; 3] = column_down().try_into().unwrap();
+    let mut engine = view_batch(&rows(), &column_down());
+    let mut sink = FakeSender::default();
+
+    engine.on_response(FIRST, true);
+    engine.tick(MoveEngine::<ModelPredictor>::BATCH_TIMEOUT_SECONDS, &rows(), &mut sink);
+
+    assert_eq!(engine.predictor().view, applied(&rows(), &[m1]));
+}
+
+#[test]
+fn the_view_follows_a_column_with_an_empty_slot() {
+    // main 18 is empty: the planner's down rotation gives a swap, a whole-stack place, then a place back
+    let mut snapshot = rows();
+    snapshot.player[18] = None;
+    let moves = vec![
+        ItemMove::Swap { a: player(0), b: player(9) },
+        ItemMove::Place { from: player(0), to: player(18), count: 2 },
+        ItemMove::Place { from: player(27), to: player(0), count: 4 },
+    ];
+    let mut engine = view_batch(&snapshot, &moves);
+
+    engine.on_response(FIRST, true);
+    engine.on_response(SECOND, false);
+    engine.on_response(THIRD, true);
+
+    assert_eq!(engine.predictor().view, applied(&snapshot, &[moves[0]]));
+    assert_eq!(&engine.predictor().view, engine.expected());
 }

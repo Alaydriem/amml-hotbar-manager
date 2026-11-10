@@ -150,7 +150,11 @@ impl RotationRunner {
         link: &mut dyn InventoryLink,
     ) -> Option<RotationEnd> {
         match self.phase {
-            Phase::Idle => None,
+            // a batch cancelled after its send is still owed its answers: it ends here once its time is up
+            Phase::Idle => {
+                engine.expire(now);
+                None
+            }
             Phase::Opening { until, .. } => {
                 if now <= until {
                     return None;
@@ -197,7 +201,8 @@ impl RotationRunner {
         Ok(())
     }
 
-    // one step of the engine; closes and ends when it is idle again
+    // one step of the engine; closes and ends when it reports an end (a cancelled batch reports it while the engine
+    // still waits for the server's answers) or is idle again
     fn run<P: MovePredictor>(
         &mut self,
         now: f64,
@@ -215,10 +220,11 @@ impl RotationRunner {
                 None => engine.cancel(),
             }
         }
-        if engine.busy() {
+        let outcome = engine.take_outcome();
+        if outcome.is_none() && engine.busy() {
             return None;
         }
-        let end = match engine.take_outcome() {
+        let end = match outcome {
             Some(outcome) if outcome.end != MoveEnd::Done => RotationEnd::Moves(outcome),
             _ => RotationEnd::Done,
         };
