@@ -1,0 +1,1 @@
+mod hotbar_config;

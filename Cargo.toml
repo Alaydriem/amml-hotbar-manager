@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["hotbar-manager/core", "hotbar-manager/amml"]
+
+[workspace.package]
+version = "26.62.0"
+edition = "2024"
+rust-version = "1.98"
+authors = ["Charles R. Portwood II"]
+license = "BSD-3-Clause"
+publish = false
+
+[workspace.dependencies]
+amm-abi = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.62.0" }
+amm-client = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.62.0", default-features = false }
+amm-core = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.62.0" }
+amml-sdk = { git = "https://github.com/Alaydriem/amml.git", tag = "26.62.0" }
+amml-game = { git = "https://github.com/Alaydriem/amml.git", tag = "26.62.0" }
+amml-msvc = { git = "https://github.com/Alaydriem/amml.git", tag = "26.62.0" }
+curia = "=0.2.2"
+hcl-rs = "=0.19.8"
+serde = { version = "1.0.229", features = ["derive"] }
+hotbar-manager-core = { path = "hotbar-manager/core" }
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

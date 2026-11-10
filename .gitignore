@@ -1,0 +1,6 @@
+.superpowers/
+target/
+dist/
+
+/mise.local.toml
+docs
