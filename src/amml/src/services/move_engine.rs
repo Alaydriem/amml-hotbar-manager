@@ -3,9 +3,19 @@ use std::collections::VecDeque;
 use hotbar_manager_core::services::SlotModel;
 use hotbar_manager_core::structs::{ItemMove, ScreenKind, Side, SlotAddr, SlotItem};
 
-use crate::game::{ContainerIds, RequestEncoder, SlotRef};
+use crate::game::{ContainerIds, RequestAction, RequestEncoder, SlotRef};
 use crate::traits::{MovePredictor, PacketSink};
 use crate::types::{MoveEnd, MoveOutcome};
+
+// a batch: every move of an action in one packet, each its own request. Before the send `sent_at` is None
+#[derive(Debug, Clone)]
+struct Batch {
+    moves: Vec<ItemMove>,
+    ids: Vec<i32>,
+    answers: Vec<Option<bool>>,
+    predicted: Vec<bool>,
+    sent_at: Option<f64>,
+}
 
 // the request in flight: its id, its move, when it was sent, and whether the client shows it already
 #[derive(Debug, Clone, Copy)]
@@ -22,7 +32,9 @@ struct InFlight {
 // applied): the same stack key, count and net id, and an empty target must be empty. A mismatch that lasts
 // SETTLE_SECONDS stops the action as stale. A refusal, or no answer within REQUEST_TIMEOUT_SECONDS, stops the action
 // and undoes the client prediction of that move. Each stop is reported once through `take_outcome`, so that the
-// caller can read the slots again. A pure state machine: the game is reached only through the sink and the predictor
+// caller can read the slots again. `start_batch` instead sends every move at once, in one packet of one request per
+// move (the row rotation): the client shows them all at once, and a refused move leaves the moves the server accepted
+// done, with the client display put back in step with them. A pure state machine: the game is reached only through the sink and the predictor
 pub struct MoveEngine<P: MovePredictor> {
     predictor: P,
     queue: VecDeque<ItemMove>,
@@ -31,6 +43,7 @@ pub struct MoveEngine<P: MovePredictor> {
     total: usize,
     accepted: usize,
     in_flight: Option<InFlight>,
+    batch: Option<Batch>,
     // when the expected model last changed (start, or an accepted move, seen at the next tick)
     settle_from: Option<f64>,
     next_id: i32,
@@ -46,6 +59,8 @@ impl<P: MovePredictor> MoveEngine<P> {
     pub const REQUEST_TIMEOUT_SECONDS: f64 = 0.5;
     // how long the live slots may lag behind the expected model before the action is stale
     pub const SETTLE_SECONDS: f64 = 0.5;
+    // the wait for every answer of a batch, one window for the whole packet: RotationRunner::ANSWER_WINDOW_SECONDS
+    pub const BATCH_TIMEOUT_SECONDS: f64 = 2.0;
 
     pub fn new(predictor: P) -> Self {
         Self {
@@ -56,6 +71,7 @@ impl<P: MovePredictor> MoveEngine<P> {
             total: 0,
             accepted: 0,
             in_flight: None,
+            batch: None,
             settle_from: None,
             next_id: Self::FIRST_REQUEST_ID,
             outcome: None,
@@ -81,9 +97,25 @@ impl<P: MovePredictor> MoveEngine<P> {
         true
     }
 
+    // starts an action whose moves go out at once, in one packet (see the type's comment). Same contract as `start`
+    pub fn start_batch(&mut self, now: f64, moves: Vec<ItemMove>, snapshot: &SlotModel, kind: ScreenKind) -> bool {
+        if moves.is_empty() || self.busy() {
+            return self.start(now, moves, snapshot, kind);
+        }
+        self.start(now, Vec::new(), snapshot, kind);
+        self.total = moves.len();
+        self.outcome = None;
+        self.batch = Some(Batch { moves, ids: Vec::new(), answers: Vec::new(), predicted: Vec::new(), sent_at: None });
+        true
+    }
+
     // once per client tick, with the slots the client shows now: ends a request that waited too long, or sends the
     // next move when nothing is in flight
     pub fn tick(&mut self, now: f64, live: &SlotModel, sink: &mut dyn PacketSink) {
+        if self.batch.is_some() {
+            self.tick_batch(now, live, sink);
+            return;
+        }
         if let Some(flight) = self.in_flight {
             if now - flight.sent_at >= Self::REQUEST_TIMEOUT_SECONDS {
                 curia::info!("item stack request not answered", { id: flight.id });
@@ -117,6 +149,14 @@ impl<P: MovePredictor> MoveEngine<P> {
 
     // the server's answer to request `request_id`; answers to other requests are ignored
     pub fn on_response(&mut self, request_id: i32, accepted: bool) {
+        if let Some(batch) = self.batch.as_mut() {
+            let Some(index) = batch.ids.iter().position(|id| *id == request_id) else { return };
+            batch.answers[index].get_or_insert(accepted);
+            if batch.answers.iter().all(Option::is_some) {
+                self.settle_batch();
+            }
+            return;
+        }
         let Some(flight) = self.in_flight.filter(|flight| flight.id == request_id) else { return };
         if !accepted {
             curia::info!("item stack request refused", { id: request_id });
@@ -139,6 +179,9 @@ impl<P: MovePredictor> MoveEngine<P> {
         if !self.busy() {
             return;
         }
+        if let Some(batch) = self.batch.take() {
+            self.undo_batch(&batch);
+        }
         if let Some(flight) = self.in_flight
             && flight.predicted
         {
@@ -148,7 +191,7 @@ impl<P: MovePredictor> MoveEngine<P> {
     }
 
     pub fn busy(&self) -> bool {
-        self.in_flight.is_some() || !self.queue.is_empty()
+        self.in_flight.is_some() || !self.queue.is_empty() || self.batch.is_some()
     }
 
     // how the last action ended, once
@@ -178,7 +221,105 @@ impl<P: MovePredictor> MoveEngine<P> {
     fn finish(&mut self, end: MoveEnd) {
         self.queue.clear();
         self.in_flight = None;
+        self.batch = None;
         self.outcome = Some(MoveOutcome { accepted: self.accepted, total: self.total, end });
+    }
+
+    // a batch before its send waits for the live slots to hold the snapshot, then sends every move in one packet and
+    // shows them all; after the send it ends the batch once the time for the answers is up
+    fn tick_batch(&mut self, now: f64, live: &SlotModel, sink: &mut dyn PacketSink) {
+        let Some(batch) = self.batch.as_ref() else { return };
+        if let Some(sent_at) = batch.sent_at {
+            if now - sent_at >= Self::BATCH_TIMEOUT_SECONDS {
+                curia::info!("item stack batch not fully answered", { requests: batch.ids.len() as i64 });
+                self.settle_batch();
+            }
+            return;
+        }
+        let moves = batch.moves.clone();
+        let settle_from = *self.settle_from.get_or_insert(now);
+        if !moves.iter().all(|mv| self.matches(live, mv)) {
+            if now - settle_from >= Self::SETTLE_SECONDS {
+                self.finish(MoveEnd::Stale { mv: moves[0], index: 0 });
+            }
+            return;
+        }
+        // each request names the net ids its slots hold once the moves before it are done
+        let mut after = self.expected.clone();
+        let mut requests = Vec::with_capacity(moves.len());
+        for (index, mv) in moves.iter().enumerate() {
+            let action = self.action(mv, &after);
+            let (Some(action), Ok(())) = (action, after.apply(mv)) else {
+                self.finish(MoveEnd::NotSent { mv: *mv, index });
+                return;
+            };
+            requests.push((self.next_id(), action));
+        }
+        if !sink.send(&RequestEncoder::batch(&requests)) {
+            self.finish(MoveEnd::NotSent { mv: moves[0], index: 0 });
+            return;
+        }
+        let mut before = self.expected.clone();
+        let mut predicted = Vec::with_capacity(moves.len());
+        for mv in &moves {
+            predicted.push(self.predictor.predict(mv, &before));
+            // every move applied above
+            let _ = before.apply(mv);
+        }
+        if let Some(batch) = self.batch.as_mut() {
+            batch.ids = requests.iter().map(|(id, _)| *id).collect();
+            batch.answers = vec![None; moves.len()];
+            batch.predicted = predicted;
+            batch.sent_at = Some(now);
+        }
+    }
+
+    // ends a sent batch; a missing answer counts as refused. All accepted, the predictions are confirmed. Otherwise
+    // every prediction is undone (newest first) and the accepted moves are shown again in order, so that the client
+    // shows what the server did
+    fn settle_batch(&mut self) {
+        let Some(batch) = self.batch.take() else { return };
+        let Some(refused) = batch.answers.iter().position(|answer| *answer != Some(true)) else {
+            for (mv, predicted) in batch.moves.iter().zip(&batch.predicted) {
+                if *predicted {
+                    self.predictor.confirm(mv);
+                }
+                self.apply_expected(mv);
+            }
+            self.accepted = batch.moves.len();
+            self.finish(MoveEnd::Done);
+            return;
+        };
+        let timed_out = batch.answers.iter().any(Option::is_none);
+        let undone = self.undo_batch(&batch);
+        for (mv, answer) in batch.moves.iter().zip(&batch.answers) {
+            if *answer != Some(true) {
+                continue;
+            }
+            let before = self.expected.clone();
+            if before.clone().apply(mv).is_err() {
+                break;
+            }
+            // the server did this move: shown again, with no answer owed for it
+            if self.predictor.predict(mv, &before) {
+                self.predictor.confirm(mv);
+            }
+            self.apply_expected(mv);
+            self.accepted += 1;
+        }
+        let mv = batch.moves[refused];
+        self.finish(MoveEnd::Rejected { mv, index: refused, timed_out, undone });
+    }
+
+    // puts back every prediction of `batch`, newest first; true when something was put back
+    fn undo_batch(&mut self, batch: &Batch) -> bool {
+        let mut undone = false;
+        for (mv, predicted) in batch.moves.iter().zip(&batch.predicted).rev() {
+            if *predicted {
+                undone |= self.predictor.undo(mv);
+            }
+        }
+        undone
     }
 
     fn next_id(&mut self) -> i32 {
@@ -238,18 +379,19 @@ impl<P: MovePredictor> MoveEngine<P> {
 
     // the request for `mv`, named with the net ids the client shows now; None when a slot has no container id
     fn encode(&self, id: i32, mv: &ItemMove, live: &SlotModel) -> Option<Vec<u8>> {
-        let slot = |addr: SlotAddr| self.slot_ref(addr, live);
+        Some(RequestEncoder::batch(&[(id, self.action(mv, live)?)]))
+    }
+
+    // the action of `mv`, named with the net ids of `model`; None when a slot has no container id
+    fn action(&self, mv: &ItemMove, model: &SlotModel) -> Option<RequestAction> {
+        let slot = |addr: SlotAddr| self.slot_ref(addr, model);
         Some(match *mv {
-            ItemMove::Swap { a, b } => RequestEncoder::swap(id, slot(a)?, slot(b)?),
-            ItemMove::Place { from, to, count } => {
-                let target = slot(to)?;
-                if Self::slot(live, to).is_none() {
-                    RequestEncoder::place(id, count, slot(from)?, target)
-                } else {
-                    RequestEncoder::place_onto(id, count, slot(from)?, target)
-                }
+            ItemMove::Swap { a, b } => RequestAction::Swap { from: slot(a)?, to: slot(b)? },
+            ItemMove::Place { from, to, count } if Self::slot(model, to).is_none() => {
+                RequestAction::Place { count, from: slot(from)?, to: slot(to)? }
             }
-            ItemMove::Drop { from, count } => RequestEncoder::drop(id, count, slot(from)?),
+            ItemMove::Place { from, to, count } => RequestAction::PlaceOnto { count, from: slot(from)?, to: slot(to)? },
+            ItemMove::Drop { from, count } => RequestAction::Drop { count, from: slot(from)? },
         })
     }
 

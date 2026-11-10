@@ -3,7 +3,8 @@ use hotbar_manager_core::structs::ItemMove;
 
 // The client prediction of the move engine: what the client shows of a move before the server answers. The engine
 // calls `predict` right after a request is sent, then `confirm` when the server accepts it, or `undo` when the server
-// refuses it, no answer comes in time, or the action is cancelled. One request is in flight at a time
+// refuses it, no answer comes in time, or the action is cancelled. Several predictions may be in flight (a batch):
+// `confirm` drops the oldest, `undo` puts back the newest, so the engine undoes in reverse order of `predict`
 pub trait MovePredictor {
     // `before` is the engine's expected model before the move; true when the client now shows the move
     fn predict(&mut self, mv: &ItemMove, before: &SlotModel) -> bool;

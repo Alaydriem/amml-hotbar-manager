@@ -31,7 +31,7 @@ pub use player_inventory::PlayerInventory;
 pub use player_predictor::PlayerPredictor;
 pub use player_slots::PlayerSlots;
 pub use read_only_stream::ReadOnlyStream;
-pub use request_encoder::RequestEncoder;
+pub use request_encoder::{RequestAction, RequestEncoder};
 pub use slot_ref::SlotRef;
 pub use stack_responses::StackResponses;
 pub use top_screen::TopScreen;

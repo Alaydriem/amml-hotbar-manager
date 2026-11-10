@@ -150,7 +150,7 @@ fn a_run_that_times_out_ends_with_a_close() {
     let source = screen(one_stack());
     let mut runner = running(&mut link, &mut engine, &source);
 
-    let late = 1.2 + MoveEngine::<FakePredictor>::REQUEST_TIMEOUT_SECONDS;
+    let late = 1.2 + MoveEngine::<FakePredictor>::BATCH_TIMEOUT_SECONDS;
     let end = runner.tick(late, true, Some(&source), &mut engine, &mut link);
 
     assert_eq!(link.sent, [Sent::Open, Sent::Request, Sent::Close(CONTAINER)]);
@@ -319,4 +319,21 @@ fn a_rotation_waits_while_a_player_slot_reads_net_id_0() {
     assert_eq!(runner.tick(2.2, true, Some(&source), &mut engine, &mut link), None);
     assert!(engine.busy());
     assert_eq!(link.sent.last(), Some(&Sent::Request));
+}
+
+#[test]
+fn a_full_rotation_goes_out_as_one_request_packet() {
+    let (mut link, mut engine) = (FakeLink::default(), engine());
+    let mut full = model(0);
+    for slot in 0..36u8 {
+        full.player[usize::from(slot)] = stack("stone", i16::from(slot), 1, 100 + i32::from(slot));
+    }
+    let source = screen(full);
+    let mut runner = opened(&mut link, &engine);
+
+    assert_eq!(runner.tick(1.2, true, Some(&source), &mut engine, &mut link), None);
+
+    assert_eq!(link.sent, [Sent::Open, Sent::Request]);
+    // 9 columns of 3 swaps, one request each, in one payload whose first byte is the request count
+    assert_eq!(link.requests[0][0], 27);
 }

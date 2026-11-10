@@ -13,12 +13,15 @@ pub enum Sent {
 #[derive(Default)]
 pub struct FakeLink {
     pub sent: Vec<Sent>,
+    // the bytes of each request payload, in order
+    pub requests: Vec<Vec<u8>>,
     pub refuse_open: bool,
 }
 
 impl PacketSink for FakeLink {
-    fn send(&mut self, _bytes: &[u8]) -> bool {
+    fn send(&mut self, bytes: &[u8]) -> bool {
         self.sent.push(Sent::Request);
+        self.requests.push(bytes.to_vec());
         true
     }
 }

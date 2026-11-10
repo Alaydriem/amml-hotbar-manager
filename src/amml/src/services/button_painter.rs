@@ -379,6 +379,9 @@ impl ButtonPainter {
             }
             texture
         });
+        // DIAG (temporary, pink glyph investigation): log what getTexture gives for each glyph and for references
+        // SAFETY: forwarded to the caller of `load`
+        unsafe { self.diag_probe(ctx, &heap, &states[0], &glyphs) };
         // SAFETY: the heap is the game's; an empty string has no heap block
         let name = unsafe { MsvcString::new_in(&heap, "") }.ok()?;
         let material = Box::leak(Box::new(HashedStringLayout::new(name))) as *mut HashedStringLayout as usize;
@@ -414,6 +417,64 @@ impl ButtonPainter {
         let text = unsafe { MsvcString::new_in(heap, path) }.ok()?;
         let (path_hash, full_hash) = Self::location_hashes(path, file_system);
         Some(Box::leak(Box::new(ResourceLocationLayout { file_system, _pad: 0, path: text, path_hash, full_hash })))
+    }
+
+    // DIAG (temporary): the first 12 words of a BedrockTextureData, or "null"
+    #[allow(unsafe_code)]
+    unsafe fn diag_words(texture: usize) -> String {
+        if texture == 0 {
+            return "null".to_string();
+        }
+        (0..12u64)
+            .map(|i| {
+                // SAFETY: a non-null BedrockTextureData from getTexture is at least 60h readable bytes
+                let word = unsafe { RawObject::read::<usize>(texture as *const c_void, i * 8) }.unwrap_or(0);
+                format!("{word:#x}")
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    // DIAG (temporary): one line per glyph and per reference texture
+    #[allow(unsafe_code)]
+    unsafe fn diag_probe(
+        &self,
+        ctx: *mut c_void,
+        heap: &MsvcHeap,
+        vanilla: &TexturePtrLayout,
+        glyphs: &[Option<TexturePtrLayout>],
+    ) {
+        let Some(dir) = self.textures_dir.as_deref() else {
+            Self::warn("DIAG no textures_dir");
+            return;
+        };
+        // SAFETY: the pointer came from getTexture and is kept alive
+        Self::warn(&format!("DIAG vanilla state ptr={:#x} words=[{}]", vanilla.texture, unsafe {
+            Self::diag_words(vanilla.texture)
+        }));
+        for (glyph, texture) in Self::GLYPHS.iter().zip(glyphs) {
+            let path = format!("{dir}/{}", Self::glyph_file(*glyph));
+            let exists = std::path::Path::new(&format!("{path}.png")).exists();
+            let ptr = texture.map_or(0, |t| t.texture);
+            // SAFETY: as above
+            let words = unsafe { Self::diag_words(ptr) };
+            Self::warn(&format!("DIAG glyph path={path} png_exists={exists} ptr={ptr:#x} words=[{words}]"));
+        }
+        let probes = [
+            (format!("{dir}/__diag_missing__"), Self::FS_RAW),
+            (format!("{dir}/sort.png"), Self::FS_RAW),
+            (format!("{dir}/sort"), Self::FS_USER_PACKAGE),
+            (format!("{dir}/sort"), 1),
+            (format!("{dir}/sort"), 3),
+            ("textures/ui/__diag_missing__".to_string(), Self::FS_USER_PACKAGE),
+        ];
+        for (path, fs) in probes {
+            // SAFETY: forwarded to the caller of `load`
+            let ptr = unsafe { self.texture(ctx, heap, &path, fs) }.map_or(0, |t| t.texture);
+            // SAFETY: as above
+            let words = unsafe { Self::diag_words(ptr) };
+            Self::warn(&format!("DIAG probe fs={fs} path={path} ptr={ptr:#x} words=[{words}]"));
+        }
     }
 
     fn warn(message: &str) {

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::ffi::c_void;
 
 use amml_game::RawObject;
@@ -12,12 +13,13 @@ use crate::types::PlayerCalls;
 // requests: a move between two player slots that the game's `FillingContainer::swapSlots` can show (a swap, or a
 // whole stack into an empty slot) is shown at once, and swapped back when the server refuses it or no answer comes,
 // only while the slot still holds the moved stack. Every other move waits for the server's answer: no safe setter for
-// the open container's slots was found (see the task 9b report). Holds the prediction of one request at a time
+// the open container's slots was found (see the task 9b report). Holds the predictions of the requests in flight, in
+// the order they were made (one for a single move, several for a batch)
 pub struct PlayerPredictor {
     calls: Option<PlayerCalls>,
     client: *mut c_void,
-    // the two slots of the prediction in flight, and the net id of the stack moved into the second
-    done: Option<(u8, u8, i32)>,
+    // the predictions in flight, oldest first: the two slots, and the net id of the stack moved into the second
+    done: VecDeque<(u8, u8, i32)>,
 }
 
 // SAFETY: the client pointer is a game object used on the game thread only, under the runtime's lock; another thread
@@ -33,13 +35,13 @@ impl Default for PlayerPredictor {
 
 impl PlayerPredictor {
     pub fn new() -> Self {
-        Self { calls: None, client: std::ptr::null_mut(), done: None }
+        Self { calls: None, client: std::ptr::null_mut(), done: VecDeque::new() }
     }
 
     // enable: the calls of the running build; without them nothing is predicted
     pub fn bind(&mut self, calls: Option<PlayerCalls>) {
         self.calls = calls;
-        self.done = None;
+        self.done.clear();
     }
 
     // whether the calls are bound, so that moves can be predicted
@@ -97,21 +99,20 @@ impl PlayerPredictor {
 
 impl MovePredictor for PlayerPredictor {
     fn predict(&mut self, mv: &ItemMove, before: &SlotModel) -> bool {
-        self.done = None;
         let Some((a, b)) = Self::swap_pair(mv, before) else { return false };
         let Some(inventory) = self.inventory() else { return false };
         let Some(moved) = inventory.net_id(usize::from(a)) else { return false };
         inventory.swap_slots(i32::from(a), i32::from(b));
-        self.done = Some((a, b, moved));
+        self.done.push_back((a, b, moved));
         true
     }
 
     fn confirm(&mut self, _mv: &ItemMove) {
-        self.done = None;
+        self.done.pop_front();
     }
 
     fn undo(&mut self, _mv: &ItemMove) -> bool {
-        let Some((a, b, moved)) = self.done.take() else { return false };
+        let Some((a, b, moved)) = self.done.pop_back() else { return false };
         let Some(inventory) = self.inventory() else { return false };
         if inventory.net_id(usize::from(b)) != Some(moved) {
             return false;

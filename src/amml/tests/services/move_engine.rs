@@ -1,4 +1,4 @@
-use alaydriem_hotbar_manager::game::{RequestEncoder, SlotRef};
+use alaydriem_hotbar_manager::game::{ContainerIds, RequestAction, RequestEncoder, SlotRef};
 use alaydriem_hotbar_manager::services::MoveEngine;
 use alaydriem_hotbar_manager::types::{MoveEnd, MoveOutcome};
 use hotbar_manager_core::services::SlotModel;
@@ -507,5 +507,203 @@ fn a_move_the_expected_model_refuses_is_not_sent() {
     assert_eq!(
         engine.take_outcome(),
         Some(MoveOutcome { accepted: 0, total: 1, end: MoveEnd::NotSent { mv: moves[0], index: 0 } })
+    );
+}
+
+// --- batch mode ---
+
+// hotbar 0: item 1 (net 21); main 9: item 2 (net 22); main 18: item 3 (net 23); main 27: item 4 (net 24)
+fn rows() -> SlotModel {
+    let mut model = SlotModel { container: Vec::new(), player: std::array::from_fn(|_| None) };
+    model.player[0] = item(1, 21, 1);
+    model.player[9] = item(2, 22, 2);
+    model.player[18] = item(3, 23, 3);
+    model.player[27] = item(4, 24, 4);
+    model
+}
+
+// one column rotated down: (0,9), (0,18), (0,27)
+fn column_down() -> Vec<ItemMove> {
+    vec![
+        ItemMove::Swap { a: player(0), b: player(9) },
+        ItemMove::Swap { a: player(0), b: player(18) },
+        ItemMove::Swap { a: player(0), b: player(27) },
+    ]
+}
+
+fn pslot(slot: u8, net_id: i32) -> SlotRef {
+    let (container, slot) = ContainerIds::player(slot);
+    SlotRef { container, slot, net_id }
+}
+
+// a batch of the column, sent at t=0
+fn sent_batch() -> (MoveEngine<FakePredictor>, FakeSender) {
+    let mut engine = engine();
+    let mut sink = FakeSender::default();
+    assert!(engine.start_batch(0.0, column_down(), &rows(), ScreenKind::PlayerInventory));
+    engine.tick(0.0, &rows(), &mut sink);
+    (engine, sink)
+}
+
+#[test]
+fn a_batch_sends_every_move_in_one_payload() {
+    let (_engine, sink) = sent_batch();
+
+    // after each swap the slot holds the net id of the stack swapped into it
+    let expected = RequestEncoder::batch(&[
+        (FIRST, RequestAction::Swap { from: pslot(0, 21), to: pslot(9, 22) }),
+        (SECOND, RequestAction::Swap { from: pslot(0, 22), to: pslot(18, 23) }),
+        (THIRD, RequestAction::Swap { from: pslot(0, 23), to: pslot(27, 24) }),
+    ]);
+    assert_eq!(sink.sent, vec![expected]);
+}
+
+#[test]
+fn a_batch_predicts_every_move_before_any_answer() {
+    let (engine, _sink) = sent_batch();
+
+    assert_eq!(engine.predictor().predicted, column_down());
+    assert!(engine.busy());
+}
+
+#[test]
+fn every_answer_accepted_ends_done_and_confirms_in_order() {
+    let (mut engine, _sink) = sent_batch();
+
+    engine.on_response(FIRST, true);
+    engine.on_response(SECOND, true);
+    engine.on_response(THIRD, true);
+
+    assert!(!engine.busy());
+    assert_eq!(engine.predictor().confirmed, column_down());
+    assert_eq!(engine.take_outcome(), Some(MoveOutcome { accepted: 3, total: 3, end: MoveEnd::Done }));
+    assert_eq!(engine.expected(), &applied(&rows(), &column_down()));
+}
+
+#[test]
+fn answers_in_any_order_over_several_calls_finish_the_batch() {
+    let (mut engine, mut sink) = sent_batch();
+    let live = applied(&rows(), &column_down());
+
+    engine.on_response(THIRD, true);
+    engine.tick(0.1, &live, &mut sink);
+    engine.on_response(FIRST, true);
+    engine.tick(0.2, &live, &mut sink);
+    assert!(engine.busy());
+
+    engine.on_response(SECOND, true);
+
+    assert!(!engine.busy());
+    assert_eq!(engine.take_outcome(), Some(MoveOutcome { accepted: 3, total: 3, end: MoveEnd::Done }));
+    assert_eq!(sink.sent.len(), 1);
+}
+
+#[test]
+fn later_requests_name_the_net_ids_the_earlier_moves_leave() {
+    let moves = vec![ItemMove::Swap { a: player(0), b: player(9) }, ItemMove::Swap { a: player(9), b: player(18) }];
+    let mut engine = engine();
+    let mut sink = FakeSender::default();
+
+    assert!(engine.start_batch(0.0, moves, &rows(), ScreenKind::PlayerInventory));
+    engine.tick(0.0, &rows(), &mut sink);
+
+    // slot 9 holds the stack of hotbar 0 (net 21) once the first swap is done
+    let expected = RequestEncoder::batch(&[
+        (FIRST, RequestAction::Swap { from: pslot(0, 21), to: pslot(9, 22) }),
+        (SECOND, RequestAction::Swap { from: pslot(9, 21), to: pslot(18, 23) }),
+    ]);
+    assert_eq!(sink.sent, vec![expected]);
+}
+
+#[test]
+fn a_refused_move_mid_batch_shows_only_the_accepted_moves() {
+    let (mut engine, _sink) = sent_batch();
+    let [m1, m2, m3]: [ItemMove; 3] = column_down().try_into().unwrap();
+
+    engine.on_response(FIRST, true);
+    engine.on_response(SECOND, false);
+    engine.on_response(THIRD, true);
+
+    assert_eq!(engine.predictor().undone, vec![m3, m2, m1]);
+    // the three first predictions, then the accepted moves shown again in order
+    assert_eq!(engine.predictor().predicted, vec![m1, m2, m3, m1, m3]);
+    assert_eq!(
+        engine.take_outcome(),
+        Some(MoveOutcome {
+            accepted: 2,
+            total: 3,
+            end: MoveEnd::Rejected { mv: m2, index: 1, timed_out: false, undone: true },
+        })
+    );
+    assert_eq!(engine.expected(), &applied(&rows(), &[m1, m3]));
+}
+
+#[test]
+fn unanswered_requests_count_as_refused_after_the_batch_timeout() {
+    let (mut engine, mut sink) = sent_batch();
+    let [_m1, m2, _m3]: [ItemMove; 3] = column_down().try_into().unwrap();
+    let live = applied(&rows(), &column_down());
+
+    engine.on_response(FIRST, true);
+    engine.tick(MoveEngine::<FakePredictor>::BATCH_TIMEOUT_SECONDS - 0.01, &live, &mut sink);
+    assert!(engine.busy());
+    engine.tick(MoveEngine::<FakePredictor>::BATCH_TIMEOUT_SECONDS, &live, &mut sink);
+
+    assert!(!engine.busy());
+    assert_eq!(
+        engine.take_outcome(),
+        Some(MoveOutcome {
+            accepted: 1,
+            total: 3,
+            end: MoveEnd::Rejected { mv: m2, index: 1, timed_out: true, undone: true },
+        })
+    );
+}
+
+#[test]
+fn cancel_mid_batch_undoes_every_prediction_in_reverse() {
+    let (mut engine, _sink) = sent_batch();
+    let [m1, m2, m3]: [ItemMove; 3] = column_down().try_into().unwrap();
+
+    engine.cancel();
+    engine.on_response(FIRST, true);
+
+    assert_eq!(engine.predictor().undone, vec![m3, m2, m1]);
+    assert!(engine.predictor().confirmed.is_empty());
+    assert_eq!(engine.take_outcome(), Some(MoveOutcome { accepted: 0, total: 3, end: MoveEnd::Cancelled }));
+    assert!(engine.take_outcome().is_none());
+}
+
+#[test]
+fn a_batch_waits_for_the_live_slots_then_goes_stale() {
+    let mut engine = engine();
+    let mut sink = FakeSender::default();
+    let mut live = rows();
+    live.player[18] = item(3, 99, 3);
+
+    assert!(engine.start_batch(0.0, column_down(), &rows(), ScreenKind::PlayerInventory));
+    engine.tick(0.0, &live, &mut sink);
+    assert!(sink.sent.is_empty());
+    engine.tick(MoveEngine::<FakePredictor>::SETTLE_SECONDS, &live, &mut sink);
+
+    assert!(sink.sent.is_empty());
+    assert_eq!(
+        engine.take_outcome(),
+        Some(MoveOutcome { accepted: 0, total: 3, end: MoveEnd::Stale { mv: column_down()[0], index: 0 } })
+    );
+}
+
+#[test]
+fn a_failed_send_sends_nothing_and_predicts_nothing() {
+    let mut engine = engine();
+    let mut sink = FakeSender { refuse: true, ..FakeSender::default() };
+
+    assert!(engine.start_batch(0.0, column_down(), &rows(), ScreenKind::PlayerInventory));
+    engine.tick(0.0, &rows(), &mut sink);
+
+    assert!(engine.predictor().predicted.is_empty());
+    assert_eq!(
+        engine.take_outcome(),
+        Some(MoveOutcome { accepted: 0, total: 3, end: MoveEnd::NotSent { mv: column_down()[0], index: 0 } })
     );
 }

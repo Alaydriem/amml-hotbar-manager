@@ -56,7 +56,7 @@ enum Phase {
 
 // Rotates the four player rows through a hidden inventory open, the way stratum's stack request sends its moves: a
 // rotation key sends Interact(OpenInventory); the server's ContainerOpen answer is hidden from the game; the moves of
-// `RotationPlanner` run through the move engine; whatever the engine's outcome, a ContainerClose is sent and the
+// `RotationPlanner` go out through the move engine as one batch (one packet); whatever the engine's outcome, a ContainerClose is sent and the
 // server's answer to it is hidden. If a screen opens while it runs, the engine is cancelled and the inventory closed.
 // The hidden inventory is never left open. Pure: the game is reached through `InventoryLink` and `ScreenSource`
 #[derive(Debug)]
@@ -191,7 +191,7 @@ impl RotationRunner {
         if moves.is_empty() {
             return Err(RotationEnd::Done);
         }
-        if !engine.start(now, moves, &model, ScreenKind::PlayerInventory) {
+        if !engine.start_batch(now, moves, &model, ScreenKind::PlayerInventory) {
             return Err(RotationEnd::NotStarted);
         }
         Ok(())

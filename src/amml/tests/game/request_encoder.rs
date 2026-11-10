@@ -1,4 +1,4 @@
-use alaydriem_hotbar_manager::game::{RequestEncoder, SlotRef};
+use alaydriem_hotbar_manager::game::{RequestAction, RequestEncoder, SlotRef};
 
 // The vanilla captures of docs/findings/container-ids/report.md section 3, without the `93 01` packet header: the
 // encoder writes the payload only, the way stratum's does, and the header is added when the packet is sent. Each test
@@ -59,4 +59,32 @@ fn drop_bytes_match_vanilla_from_the_cursor() {
     let expected = payload("93 01 01 2d 01 03 03 40 3b 00 00 0b 00 00 00 00 00 ff ff ff ff");
 
     assert_eq!(RequestEncoder::drop(-23, 64, slot(SlotRef::CURSOR, 0, 11)), expected);
+}
+
+#[test]
+fn a_batch_of_one_matches_the_single_request() {
+    let (a, b) = (slot(28, 0, 5), slot(29, 9, 7));
+
+    assert_eq!(
+        RequestEncoder::batch(&[(-100001, RequestAction::Swap { from: a, to: b })]),
+        RequestEncoder::swap(-100001, a, b)
+    );
+}
+
+#[test]
+fn a_batch_of_two_writes_the_count_then_each_request() {
+    let (a, b, c) = (slot(28, 0, 5), slot(29, 9, 7), slot(29, 18, 0));
+    let first = RequestEncoder::swap(-100001, a, b);
+    let second = RequestEncoder::place(-100003, 4, b, c);
+    // each single payload starts with its request count, 1, in one byte
+    let mut expected = vec![2u8];
+    expected.extend_from_slice(&first[1..]);
+    expected.extend_from_slice(&second[1..]);
+
+    let batch = RequestEncoder::batch(&[
+        (-100001, RequestAction::Swap { from: a, to: b }),
+        (-100003, RequestAction::Place { count: 4, from: b, to: c }),
+    ]);
+
+    assert_eq!(batch, expected);
 }
