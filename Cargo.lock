@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "hotbar-manager-amml"
-version = "26.62.0"
+version = "26.63.4"
 dependencies = [
  "amm-abi",
  "amm-client",
@@ -409,7 +409,7 @@ dependencies = [
 
 [[package]]
 name = "hotbar-manager-core"
-version = "26.62.0"
+version = "26.63.4"
 dependencies = [
  "hcl-rs",
  "serde",

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["src/core", "src/amml"]
 
 [workspace.package]
-version = "26.62.0"
+version = "26.63.4"
 edition = "2024"
 rust-version = "1.98"
 authors = ["Charles R. Portwood II"]
