@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["hotbar-manager/core", "hotbar-manager/amml"]
+members = ["src/core", "src/amml"]
 
 [workspace.package]
 version = "26.62.0"
@@ -20,7 +20,7 @@ amml-msvc = { git = "https://github.com/Alaydriem/amml.git", tag = "26.62.0" }
 curia = "=0.2.2"
 hcl-rs = "=0.19.8"
 serde = { version = "1.0.229", features = ["derive"] }
-hotbar-manager-core = { path = "hotbar-manager/core" }
+hotbar-manager-core = { path = "src/core" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

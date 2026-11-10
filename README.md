@@ -2,7 +2,7 @@
 
 <img src="./assets/readme.png" alt="Hotbar Manager" width="256">
 
-# Hotbar Manager
+# Alaydriem's Hotbar Manager
 
 [![Release](https://img.shields.io/github/v/release/alaydriem/amml-hotbar-manager?include_prereleases)](https://github.com/alaydriem/amml-hotbar-manager/releases)
 [![Build](https://img.shields.io/github/actions/workflow/status/alaydriem/amml-hotbar-manager/build.yml?branch=master&label=build)](https://github.com/alaydriem/amml-hotbar-manager/actions/workflows/build.yml)
@@ -65,7 +65,7 @@ mise run test
 mise run package
 ```
 
-`mise run package` writes `dist/@alaydriem/hotbar-manager/`. `mise run install [--instance <name>]` runs `package`, then copies it into `%LOCALAPPDATA%\amml\instances\<name>\mods\amml\@alaydriem\hotbar-manager\`. Close the game first.
+`mise run package` writes `dist/@alaydriem/hotbar-manager/`. `mise run install --instance <name>` runs `package`, then copies it into `%LOCALAPPDATA%\amml\instances\<name>\mods\amml\@alaydriem\hotbar-manager\`. Close the game first.
 
 ## License
 

@@ -1,0 +1,38 @@
+name: Release
+run-name: Release ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, semver from the Minecraft version (26.60.5)
+        required: true
+        type: string
+      amml_ref:
+        description: amml branch, tag or commit to build against; empty means the highest amml tag in this version's MAJOR.MINOR series
+        required: false
+        type: string
+        default: ""
+      modmanager_ref:
+        description: amml-modmanager branch, tag or commit to build against; empty means the highest amml-modmanager tag in this version's MAJOR.MINOR series
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: alaydriem/amml/.github/workflows/release-mod.yml@master
+    secrets: inherit
+    with:
+      registry: true
+      version: ${{ inputs.version }}
+      amml_ref: ${{ inputs.amml_ref }}
+      modmanager_ref: ${{ inputs.modmanager_ref }}
+      path: hotbar-manager
+      namespace: alaydriem
+      name: hotbar-manager
+      package_task: package
+      descriptor: src/amml/descriptor.hcl

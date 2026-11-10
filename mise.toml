@@ -28,27 +28,28 @@ shell = "bash -c"
 run = '''
 set -e
 cargo build --release -p hotbar-manager-amml
-rm -rf dist/alaydriem-hotbar-manager dist/@alaydriem/hotbar-manager
+rm -rf dist/@alaydriem/hotbar-manager
 mkdir -p dist/@alaydriem/hotbar-manager
 cp target/release/alaydriem_hotbar_manager.dll dist/@alaydriem/hotbar-manager/alaydriem_hotbar_manager.dll
-cp hotbar-manager/amml/amml.hcl dist/@alaydriem/hotbar-manager/amml.hcl
-cp hotbar-manager/amml/icon.png dist/@alaydriem/hotbar-manager/icon.png
-cp -r hotbar-manager/amml/textures dist/@alaydriem/hotbar-manager/textures
+cp src/amml/amml.hcl dist/@alaydriem/hotbar-manager/amml.hcl
+cp src/amml/icon.png dist/@alaydriem/hotbar-manager/icon.png
+cp -r src/amml/textures dist/@alaydriem/hotbar-manager/textures
+if find dist -name '*.pdb' | grep -q .; then echo "a .pdb is in dist/; debug symbols are never shipped"; exit 1; fi
 echo "built dist/@alaydriem/hotbar-manager"
 '''
 
 [tasks.install]
-description = "Runs package, then copies dist/@alaydriem/hotbar-manager into mods/amml/@alaydriem/hotbar-manager of an AMML instance under %LOCALAPPDATA%/amml/instances (--instance, default 1.26.63.01-hotbar). The mod's config/ stays. Close the game first: a running game locks the DLL"
+description = "Runs package, then copies dist/@alaydriem/hotbar-manager into mods/amml/@alaydriem/hotbar-manager of an AMML instance under %LOCALAPPDATA%/amml/instances (--instance, required). The mod's config/ stays. Close the game first: a running game locks the DLL"
 depends = ["package"]
 dir = "{{config_root}}"
 shell = "bash -c"
 usage = '''
-flag "--instance <name>" default="1.26.63.01-hotbar" help="The instance folder under %LOCALAPPDATA%/amml/instances"
+flag "--instance <name>" required=#true help="The instance folder under %LOCALAPPDATA%/amml/instances"
 '''
 run = '''
 set -e
 [ -n "$LOCALAPPDATA" ] || { echo "LOCALAPPDATA is not set; the instances live under %LOCALAPPDATA%/amml/instances"; exit 1; }
-instance="$LOCALAPPDATA/amml/instances/${usage_instance:-1.26.63.01-hotbar}"
+instance="$LOCALAPPDATA/amml/instances/${usage_instance:?--instance is required}"
 [ -f "$instance/Minecraft.Windows.exe" ] || { echo "no instance at $instance"; exit 1; }
 target="$instance/mods/amml/@alaydriem/hotbar-manager"
 mkdir -p "$target"

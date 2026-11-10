@@ -1,6 +1,6 @@
-.superpowers/
-target/
-dist/
-
+/target
+/dist
 /mise.local.toml
-docs
+/.superpowers/
+/docs
+*.pdb

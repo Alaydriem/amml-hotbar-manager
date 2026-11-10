@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/hotbar-manager
+
+defaults:
+  run:
+    working-directory: hotbar-manager
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hotbar-manager
+
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: hotbar-manager
+
+      - uses: taiki-e/install-action@nextest
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            hotbar-manager/target
+          key: cargo-${{ hashFiles('hotbar-manager/Cargo.lock', 'hotbar-manager/rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-
+
+      - run: mise run check
+      - run: mise run test
+      - run: mise run package
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: alaydriem-hotbar-manager-${{ github.sha }}-windows-x64
+          path: hotbar-manager/dist/@alaydriem/hotbar-manager/
