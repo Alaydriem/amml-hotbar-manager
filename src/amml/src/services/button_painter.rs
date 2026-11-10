@@ -21,11 +21,10 @@ pub struct ButtonPainter {
     textures: Option<TextureSet>,
     attempted: bool,
     queue_warned: bool,
+    // paints that skipped a texture the game still loaded, and whether the first ready paint after them was logged
+    loading_paints: u32,
+    ready_logged: bool,
 }
-
-// DIAG (temporary): the probed textures, logged again later, and the paint count
-static DIAG_LATER: std::sync::Mutex<Vec<(String, usize)>> = std::sync::Mutex::new(Vec::new());
-static DIAG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 // What one batch draws with
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,7 +133,15 @@ impl ButtonPainter {
 
     // `textures_dir`: the mod's textures folder, absolute, forward slashes, no trailing slash
     pub fn new(calls: ButtonCalls, textures_dir: Option<String>) -> Self {
-        Self { calls, textures_dir, textures: None, attempted: false, queue_warned: false }
+        Self {
+            calls,
+            textures_dir,
+            textures: None,
+            attempted: false,
+            queue_warned: false,
+            loading_paints: 0,
+            ready_logged: false,
+        }
     }
 
     // the file of each glyph in the mod's textures folder, without the extension
@@ -289,6 +296,13 @@ impl ButtonPainter {
         busy
     }
 
+    // whether a texture holds its image, by its size word (BedrockTextureData +10h: width and height as two u32).
+    // getTexture of a raw path gives the data at once and the game loads the image later; a texture drawn before
+    // that can show the pink missing texture for the rest of the session (the glyphs of 2026-11-09)
+    pub fn texture_ready(size: u64) -> bool {
+        size & 0xFFFF_FFFF != 0 && size >> 32 != 0
+    }
+
     // whether the textures loaded and the glyph of `glyph` with them
     pub fn can_draw(&self, glyph: Glyph) -> bool {
         self.textures.as_ref().is_some_and(|set| set.glyph(glyph).is_some())
@@ -315,8 +329,6 @@ impl ButtonPainter {
         }
         // SAFETY: forwarded to the caller
         unsafe { self.ensure_textures(ctx) };
-        // DIAG (temporary)
-        Self::diag_later();
         let Some(set) = self.textures.as_ref() else { return Vec::new() };
         // SAFETY: the live context, whose vtable holds drawImage and flushImages at the entries' slots
         let draw = unsafe { RawObject::slot(ctx, self.calls.draw_image_slot) };
@@ -330,6 +342,7 @@ impl ButtonPainter {
         let flush = unsafe { std::mem::transmute::<*const c_void, FlushImagesFn>(flush) };
         let material = set.material as *const HashedStringLayout;
         let mut drawn = Vec::new();
+        let mut loading = false;
         for spec in ButtonLayout::for_screen(kind) {
             if set.glyph(spec.glyph).is_none() {
                 continue;
@@ -337,6 +350,12 @@ impl ButtonPainter {
             let look = Self::look_of(spec.action, hovered, pressed);
             for batch in Self::plan(&spec, panel.resolve(&spec), look) {
                 let Some(texture) = set.texture(batch.texture) else { continue };
+                // SAFETY: the texture data is held by a TexturePtr the mod never releases; its size word is at +10h
+                let size = unsafe { RawObject::read::<u64>(texture as *const c_void, 0x10) }.unwrap_or(0);
+                if !Self::texture_ready(size) {
+                    loading = true;
+                    continue;
+                }
                 for quad in &batch.quads {
                     // SAFETY: the context is live; the texture data is held by a TexturePtr the mod never releases,
                     // and the vectors live across the call (drawImage copies them into its queue item)
@@ -348,6 +367,14 @@ impl ButtonPainter {
                 unsafe { flush(ctx, &batch.color, 1.0, material) };
             }
             drawn.push(spec);
+        }
+        if loading {
+            self.loading_paints = self.loading_paints.saturating_add(1);
+        } else if !self.ready_logged {
+            self.ready_logged = true;
+            if let Some(runtime) = amml_sdk::ModRuntime::get() {
+                runtime.logger().info(&format!("the button textures were ready after {} paints", self.loading_paints));
+            }
         }
         drawn
     }
@@ -385,9 +412,6 @@ impl ButtonPainter {
             }
             texture
         });
-        // DIAG (temporary, pink glyph investigation): log what getTexture gives for each glyph and for references
-        // SAFETY: forwarded to the caller of `load`
-        unsafe { self.diag_probe(ctx, &heap, &states[0], &glyphs) };
         // SAFETY: the heap is the game's; an empty string has no heap block
         let name = unsafe { MsvcString::new_in(&heap, "") }.ok()?;
         let material = Box::leak(Box::new(HashedStringLayout::new(name))) as *mut HashedStringLayout as usize;
@@ -423,95 +447,6 @@ impl ButtonPainter {
         let text = unsafe { MsvcString::new_in(heap, path) }.ok()?;
         let (path_hash, full_hash) = Self::location_hashes(path, file_system);
         Some(Box::leak(Box::new(ResourceLocationLayout { file_system, _pad: 0, path: text, path_hash, full_hash })))
-    }
-
-    // DIAG (temporary): the first 12 words of a BedrockTextureData, or "null"
-    #[allow(unsafe_code)]
-    unsafe fn diag_words(texture: usize) -> String {
-        if texture == 0 {
-            return "null".to_string();
-        }
-        (0..12u64)
-            .map(|i| {
-                // SAFETY: a non-null BedrockTextureData from getTexture is at least 60h readable bytes
-                let word = unsafe { RawObject::read::<usize>(texture as *const c_void, i * 8) }.unwrap_or(0);
-                format!("{word:#x}")
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    // DIAG (temporary): one line per glyph and per reference texture
-    #[allow(unsafe_code)]
-    unsafe fn diag_probe(
-        &self,
-        ctx: *mut c_void,
-        heap: &MsvcHeap,
-        vanilla: &TexturePtrLayout,
-        glyphs: &[Option<TexturePtrLayout>],
-    ) {
-        let Some(dir) = self.textures_dir.as_deref() else {
-            Self::warn("DIAG no textures_dir");
-            return;
-        };
-        // SAFETY: the pointer came from getTexture and is kept alive
-        Self::warn(&format!("DIAG vanilla state ptr={:#x} words=[{}]", vanilla.texture, unsafe {
-            Self::diag_words(vanilla.texture)
-        }));
-        for (glyph, texture) in Self::GLYPHS.iter().zip(glyphs) {
-            let path = format!("{dir}/{}", Self::glyph_file(*glyph));
-            let exists = std::path::Path::new(&format!("{path}.png")).exists();
-            let ptr = texture.map_or(0, |t| t.texture);
-            // SAFETY: as above
-            let words = unsafe { Self::diag_words(ptr) };
-            Self::warn(&format!("DIAG glyph path={path} png_exists={exists} ptr={ptr:#x} words=[{words}]"));
-        }
-        // round 2: copy sort.png to places the game may allow, and load it from each (Raw, file system 2)
-        let source = std::path::PathBuf::from(format!("{dir}/sort.png"));
-        let instance = source.ancestors().nth(6).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-        let data =
-            std::env::var("LOCALAPPDATA").map(|p| format!("{}/amml/data", p.replace('\\', "/"))).unwrap_or_default();
-        for folder in [format!("{instance}/hm_probe"), format!("{data}/hm_probe")] {
-            let copied =
-                std::fs::create_dir_all(&folder).and_then(|()| std::fs::copy(&source, format!("{folder}/sort.png")));
-            Self::warn(&format!("DIAG copy to {folder}: {copied:?}"));
-        }
-        let probes = [
-            format!("{instance}/hm_probe/sort"),
-            format!("{data}/hm_probe/sort"),
-            "hm_probe/sort".to_string(),
-            "mods/amml/@alaydriem/hotbar-manager/textures/sort".to_string(),
-            format!("{dir}/sort").replace('/', "\\"),
-        ];
-        for path in probes {
-            // SAFETY: forwarded to the caller of `load`
-            let ptr = unsafe { self.texture(ctx, heap, &path, Self::FS_RAW) }.map_or(0, |t| t.texture);
-            // SAFETY: as above
-            let words = unsafe { Self::diag_words(ptr) };
-            Self::warn(&format!("DIAG probe2 path={path} ptr={ptr:#x} words=[{words}]"));
-            DIAG_LATER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((path, ptr));
-        }
-        if let Some(Some(sort)) = glyphs.first() {
-            DIAG_LATER
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((format!("{dir}/sort (glyph)"), sort.texture));
-        }
-    }
-
-    // DIAG (temporary): logs the probed textures again, once, about 4 s of paints after the load, in case a load
-    // finishes late
-    #[allow(unsafe_code)]
-    fn diag_later() {
-        let count = DIAG_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count != 240 {
-            return;
-        }
-        for (path, ptr) in DIAG_LATER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
-            // SAFETY: the pointers came from getTexture and are kept alive (never released)
-            let words = unsafe { Self::diag_words(*ptr) };
-            Self::warn(&format!("DIAG later path={path} ptr={ptr:#x} words=[{words}]"));
-        }
     }
 
     fn warn(message: &str) {
