@@ -11,12 +11,12 @@ license = "BSD-3-Clause"
 publish = false
 
 [workspace.dependencies]
-amm-abi = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.3" }
-amm-client = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.3", default-features = false }
-amm-core = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.3" }
-amml-sdk = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.3" }
-amml-game = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.3" }
-amml-msvc = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.3" }
+amm-abi = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.4" }
+amm-client = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.4", default-features = false }
+amm-core = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.4" }
+amml-sdk = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.4" }
+amml-game = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.4" }
+amml-msvc = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.4" }
 curia = "=0.2.2"
 hcl-rs = "=0.19.8"
 serde = { version = "1.0.229", features = ["derive"] }
