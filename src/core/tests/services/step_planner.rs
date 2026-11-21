@@ -8,7 +8,6 @@ fn stack(id: &str, aux: i16, count: u8) -> Option<SlotItem> {
         count,
         max: 64,
         stack_key: u64::from(aux.unsigned_abs()) + 1,
-        net_id: 1,
         mergeable: true,
     })
 }

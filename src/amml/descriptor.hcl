@@ -5,11 +5,6 @@ version      = "26.63.4"
 author       = "Alaydriem"
 config_path  = "config.hcl"
 
-claim "Input" {
-  mode   = "Shared"
-  reason = "Reads mouse clicks on its buttons in inventory and container screens"
-}
-
 keybind "rotate_up" {
   label       = "Rotate rows up"
   default     = "Alt+D"

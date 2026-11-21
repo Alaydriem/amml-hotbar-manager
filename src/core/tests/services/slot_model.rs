@@ -2,7 +2,7 @@ use hotbar_manager_core::services::SlotModel;
 use hotbar_manager_core::structs::{ItemMove, MoveError, Side, SlotAddr, SlotItem};
 
 fn item(id: &str, key: u64, count: u8, max: u8) -> SlotItem {
-    SlotItem { id: id.to_string(), aux: 0, count, max, stack_key: key, net_id: 1, mergeable: true }
+    SlotItem { id: id.to_string(), aux: 0, count, max, stack_key: key, mergeable: true }
 }
 
 fn player(slot: u8) -> SlotAddr {

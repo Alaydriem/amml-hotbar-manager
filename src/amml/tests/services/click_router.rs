@@ -1,15 +1,16 @@
 use alaydriem_hotbar_manager::services::ClickRouter;
-use alaydriem_hotbar_manager::types::{ButtonLook, ClickRoute, InputMode, UiProfile};
+use alaydriem_hotbar_manager::types::{ButtonLook, ClickRoute};
+use amml_api::{InputMode, UiProfile};
 use hotbar_manager_core::services::ButtonLayout;
 use hotbar_manager_core::structs::{ButtonAction, ButtonSpec, PanelRect, ScreenKind};
 
 // a small chest panel at a half-unit y, as at an odd screen height (docs/findings/spike-align/report.md section 1)
 const PANEL: PanelRect = PanelRect { x: 272.0, y: 542.5, w: 176.0, h: 166.0 };
-const VIEW: usize = 0x1000;
-const OTHER_VIEW: usize = 0x2000;
+const VIEW: u64 = 0x1000;
+const OTHER_VIEW: u64 = 0x2000;
 const LEFT: usize = 0;
 const RIGHT: usize = 1;
-const MOUSE: Option<InputMode> = Some(InputMode::Mouse);
+const MOUSE: InputMode = InputMode::Mouse;
 
 fn chest() -> Vec<ButtonSpec> {
     ClickRouter::buttons(ScreenKind::SmallChest, UiProfile::Classic)
@@ -277,14 +278,14 @@ fn clear_drops_every_held_flag() {
 fn a_gamepad_press_over_a_button_goes_to_the_game() {
     for mode in [InputMode::GamePad, InputMode::MotionController] {
         let mut router = ClickRouter::new();
-        assert_eq!(router.route(VIEW, LEFT, true, Some(ButtonAction::Sort), Some(mode)), ClickRoute::Pass, "{mode:?}");
-        assert_eq!(router.route(VIEW, LEFT, false, Some(ButtonAction::Sort), Some(mode)), ClickRoute::Pass, "{mode:?}");
+        assert_eq!(router.route(VIEW, LEFT, true, Some(ButtonAction::Sort), mode), ClickRoute::Pass, "{mode:?}");
+        assert_eq!(router.route(VIEW, LEFT, false, Some(ButtonAction::Sort), mode), ClickRoute::Pass, "{mode:?}");
     }
 }
 
 #[test]
-fn a_press_is_taken_in_the_pointer_modes_and_when_the_mode_cannot_be_told() {
-    for mode in [Some(InputMode::Mouse), Some(InputMode::Touch), Some(InputMode::Unknown), None] {
+fn a_press_is_taken_in_the_pointer_modes_and_when_the_mode_is_unknown() {
+    for mode in [InputMode::Mouse, InputMode::Touch, InputMode::Unknown] {
         let mut router = ClickRouter::new();
         assert_eq!(router.route(VIEW, LEFT, true, Some(ButtonAction::Sort), mode), ClickRoute::Swallow, "{mode:?}");
         assert_eq!(
@@ -301,20 +302,9 @@ fn a_held_press_swallows_its_release_after_a_switch_to_gamepad() {
     router.route(VIEW, LEFT, true, Some(ButtonAction::Sort), MOUSE);
 
     assert_eq!(
-        router.route(VIEW, LEFT, false, Some(ButtonAction::Sort), Some(InputMode::GamePad)),
+        router.route(VIEW, LEFT, false, Some(ButtonAction::Sort), InputMode::GamePad),
         ClickRoute::Fire(ButtonAction::Sort)
     );
-}
-
-#[test]
-fn the_input_mode_values_map_to_the_enum() {
-    assert_eq!(InputMode::from_value(1), InputMode::Mouse);
-    assert_eq!(InputMode::from_value(2), InputMode::Touch);
-    assert_eq!(InputMode::from_value(3), InputMode::GamePad);
-    assert_eq!(InputMode::from_value(4), InputMode::MotionController);
-    for value in [0, 5, u32::MAX] {
-        assert_eq!(InputMode::from_value(value), InputMode::Unknown, "{value}");
-    }
 }
 
 // --- look ---

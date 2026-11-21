@@ -8,7 +8,6 @@ pub struct SlotItem {
     pub max: u8,
     /// Two stacks have the same key if and only if the game would merge them.
     pub stack_key: u64,
-    pub net_id: i32,
     /// False for a stack Sort must never merge (user data the reader cannot compare).
     pub mergeable: bool,
 }

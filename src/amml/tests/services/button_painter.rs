@@ -138,35 +138,3 @@ fn every_glyph_has_its_own_file() {
         }
     }
 }
-
-#[test]
-fn the_location_hashes_match_the_spike_for_an_ascii_path() {
-    // the spike's proven hash (FNV-1, unsigned bytes), the same as the game's string hash for ASCII
-    let fnv1 = |bytes: &[u8]| {
-        bytes
-            .iter()
-            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| hash.wrapping_mul(0x0000_0100_0000_01b3) ^ u64::from(*byte))
-    };
-    let path = "C:/Users/someone/AppData/Local/amml/instances/1.26.62.01-hotbar/mods/amml/@alaydriem/hotbar-manager/textures/sort";
-    let (path_hash, full_hash) = ButtonPainter::location_hashes(path, 2);
-
-    assert_eq!(path_hash, fnv1(path.as_bytes()));
-    assert_eq!(full_hash, (2_u64 ^ 0xcbf2_9ce4_8422_2325).wrapping_mul(0x0000_0100_0000_01b3) ^ path_hash);
-    assert_eq!(ButtonPainter::location_hashes("", 0).0, 0);
-}
-
-#[test]
-fn a_queue_holds_items_when_its_begin_and_end_differ() {
-    assert!(!ButtonPainter::queue_holds_items(0, 0));
-    assert!(!ButtonPainter::queue_holds_items(0x1000, 0x1000));
-    assert!(ButtonPainter::queue_holds_items(0x1000, 0x1030));
-}
-
-#[test]
-fn a_texture_is_ready_once_its_size_is_set() {
-    // the size word of a BedrockTextureData (+10h): width and height as two u32; 0 while the game still loads it
-    assert!(!ButtonPainter::texture_ready(0));
-    assert!(ButtonPainter::texture_ready(0x0000_0007_0000_0007));
-    assert!(!ButtonPainter::texture_ready(0x0000_0007_0000_0000));
-    assert!(!ButtonPainter::texture_ready(0x0000_0000_0000_0007));
-}

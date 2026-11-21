@@ -11,12 +11,10 @@ license = "BSD-3-Clause"
 publish = false
 
 [workspace.dependencies]
-amm-abi = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.4" }
-amm-client = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.4", default-features = false }
-amm-core = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.4" }
-amml-sdk = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.4" }
-amml-game = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.4" }
-amml-msvc = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.4" }
+# Path dependencies until the release tag: AMML and the mod manager are not tagged for the v3 API yet.
+amm-client = { path = "../modmanager/crates/amm-client", default-features = false }
+amm-core = { path = "../modmanager/crates/amm-core" }
+amml-api = { path = "../amml/sdk/api" }
 curia = "=0.2.2"
 hcl-rs = "=0.19.8"
 serde = { version = "1.0.229", features = ["derive"] }

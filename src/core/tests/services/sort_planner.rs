@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use hotbar_manager_core::services::SortPlanner;
 use hotbar_manager_core::structs::SlotItem;
 
-fn stack(id: &str, aux: i16, count: u8, max: u8, key: u64, net_id: i32) -> SlotItem {
-    SlotItem { id: format!("minecraft:{id}"), aux, count, max, stack_key: key, net_id, mergeable: true }
+fn stack(id: &str, aux: i16, count: u8, max: u8, key: u64, _tag: i32) -> SlotItem {
+    SlotItem { id: format!("minecraft:{id}"), aux, count, max, stack_key: key, mergeable: true }
 }
 
 fn pad(mut items: Vec<Option<SlotItem>>, size: usize) -> Vec<Option<SlotItem>> {
@@ -89,7 +89,7 @@ fn never_merges_different_stack_keys() {
 }
 
 #[test]
-fn duplicate_net_ids_still_sort() {
+fn equal_ids_with_different_keys_still_sort() {
     let c = pad(
         vec![
             Some(stack("c", 0, 1, 64, 1, 0)),
@@ -136,14 +136,14 @@ fn ties_aux_then_original_order() {
         9,
     );
     let target = run(&c);
-    let ids: Vec<(String, i16, i32)> = target.iter().flatten().map(|i| (i.id.clone(), i.aux, i.net_id)).collect();
+    let ids: Vec<(String, i16, u64)> = target.iter().flatten().map(|i| (i.id.clone(), i.aux, i.stack_key)).collect();
     assert_eq!(
         ids,
         vec![
-            ("minecraft:banner".to_string(), 0, 3),
-            ("minecraft:banner".to_string(), 0, 4),
-            ("minecraft:wool".to_string(), 1, 2),
-            ("minecraft:wool".to_string(), 3, 1),
+            ("minecraft:banner".to_string(), 0, 20),
+            ("minecraft:banner".to_string(), 0, 21),
+            ("minecraft:wool".to_string(), 1, 1),
+            ("minecraft:wool".to_string(), 3, 3),
         ]
     );
 }

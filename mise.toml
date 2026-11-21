@@ -21,6 +21,25 @@ description = "Every test through cargo nextest run"
 dir = "{{config_root}}"
 run = "cargo nextest run --workspace"
 
+[tasks.manifest]
+description = "Rewrites the uses block of src/amml/amml.hcl from the USES of the mod"
+dir = "{{config_root}}"
+run = "cargo run -q -p hotbar-manager-amml --example write_manifest"
+
+
+[tasks.compat]
+description = "Runs the AMML compat check of the packaged mod in dist/ against a game exe (--exe, required): which events and areas of the mod this build serves. Run package first"
+dir = "{{config_root}}"
+shell = "bash -c"
+usage = '''
+flag "--exe <exe>" required=#true help="The Minecraft.Windows.exe of a test instance"
+'''
+run = '''
+set -e
+mise --cd ../amml run compat -- --exe "${usage_exe:?--exe is required}" --mods "$PWD/dist"
+'''
+
+
 [tasks.package]
 description = "Builds dist/@alaydriem/hotbar-manager/ (alaydriem_hotbar_manager.dll, amml.hcl, icon.png, textures/), the release artifact"
 dir = "{{config_root}}"
@@ -40,7 +59,6 @@ echo "built dist/@alaydriem/hotbar-manager"
 
 [tasks.install]
 description = "Runs package, then copies dist/@alaydriem/hotbar-manager into mods/amml/@alaydriem/hotbar-manager of an AMML instance under %LOCALAPPDATA%/amml/instances (--instance, required). The mod's config/ stays. Close the game first: a running game locks the DLL"
-depends = ["package"]
 dir = "{{config_root}}"
 shell = "bash -c"
 usage = '''
@@ -49,8 +67,17 @@ flag "--instance <name>" required=#true help="The instance folder under %LOCALAP
 run = '''
 set -e
 [ -n "$LOCALAPPDATA" ] || { echo "LOCALAPPDATA is not set; the instances live under %LOCALAPPDATA%/amml/instances"; exit 1; }
-instance="$LOCALAPPDATA/amml/instances/${usage_instance:?--instance is required}"
+name="${usage_instance:-}"
+[ -n "$name" ] || { echo "--instance <name> is required"; exit 1; }
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+instances="$(cd "$LOCALAPPDATA/amml/instances" 2> /dev/null && pwd -P)" || { echo "no folder $LOCALAPPDATA/amml/instances"; exit 1; }
+instance="$(cd "$instances/$name" 2> /dev/null && pwd -P)" || { echo "no instance folder $instances/$name"; exit 1; }
+[ "$(lower "$(dirname "$instance")")" = "$(lower "$instances")" ] || { echo "refusing $name: it resolves to $instance, which is not a folder of $instances"; exit 1; }
+case "$(lower "$(basename "$instance")")" in
+  1.26.63.01|1.26.63.01-p) echo "refusing $name: it resolves to $instance, a play instance; install into a test instance"; exit 1 ;;
+esac
 [ -f "$instance/Minecraft.Windows.exe" ] || { echo "no instance at $instance"; exit 1; }
+mise run package
 target="$instance/mods/amml/@alaydriem/hotbar-manager"
 mkdir -p "$target"
 cp -r dist/@alaydriem/hotbar-manager/. "$target/"

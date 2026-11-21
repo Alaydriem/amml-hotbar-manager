@@ -101,9 +101,9 @@ impl ScreenSource for FakeScreen {
 }
 
 // a stack of `count` of item `name`, whose stack key is the name's length plus its aux (enough to tell the fakes apart)
-pub fn stack(name: &str, aux: i16, count: u8, net_id: i32) -> Option<SlotItem> {
+pub fn stack(name: &str, aux: i16, count: u8) -> Option<SlotItem> {
     let stack_key = name.bytes().map(u64::from).sum::<u64>() * 100 + u64::try_from(aux).unwrap_or(0);
-    Some(SlotItem { id: format!("minecraft:{name}"), aux, count, max: 64, stack_key, net_id, mergeable: true })
+    Some(SlotItem { id: format!("minecraft:{name}"), aux, count, max: 64, stack_key, mergeable: true })
 }
 
 pub fn model(container_slots: usize) -> SlotModel {

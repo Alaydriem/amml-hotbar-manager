@@ -12,7 +12,7 @@ fn stack(id: &str, count: u8, key: u64) -> Option<SlotItem> {
 }
 
 fn sized(id: &str, count: u8, max: u8, key: u64) -> Option<SlotItem> {
-    Some(SlotItem { id: format!("minecraft:{id}"), aux: 0, count, max, stack_key: key, net_id: 1, mergeable: true })
+    Some(SlotItem { id: format!("minecraft:{id}"), aux: 0, count, max, stack_key: key, mergeable: true })
 }
 
 fn pad(mut items: Vec<Option<SlotItem>>, size: usize) -> Vec<Option<SlotItem>> {

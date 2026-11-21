@@ -1,4 +1,4 @@
-use alaydriem_hotbar_manager::game::ScreenActions;
+use alaydriem_hotbar_manager::traits::ScreenActions;
 use hotbar_manager_core::structs::ScreenStep;
 
 use crate::support::fake_screen::FakeScreen;

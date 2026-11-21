@@ -3,7 +3,7 @@ use amm_core::config::ResolutionBook;
 use amm_core::services::DescriptorChecker;
 use amm_core::services::clash::ClashAnalyzer;
 use amm_core::services::registry::ModRegistry;
-use amm_core::structs::descriptor::{Capability, ClaimMode, Descriptor, KeyScope};
+use amm_core::structs::descriptor::{Capability, Descriptor, KeyScope};
 
 // the default chords: Alt+D rotates up, Alt+A rotates down, Alt+X sorts (virtual-key codes of D, A and X)
 const DEFAULT_KEYS: [(&str, u32); 3] = [("rotate_up", 0x44), ("rotate_down", 0x41), ("sort", 0x58)];
@@ -20,7 +20,7 @@ fn descriptor_passes_manager_checker() {
     assert_eq!(descriptor.name, "hotbar-manager");
     assert_eq!(descriptor.id(), "@alaydriem/hotbar-manager");
     let claims: Vec<_> = descriptor.claims.iter().map(|claim| (claim.capability, claim.mode)).collect();
-    assert_eq!(claims, [(Capability::Input, ClaimMode::Shared)]);
+    assert!(claims.is_empty());
 }
 
 #[test]
