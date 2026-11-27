@@ -19,7 +19,8 @@ dependencies = [
 
 [[package]]
 name = "amm-abi"
-version = "26.63.4"
+version = "26.63.8"
+source = "git+https://github.com/Alaydriem/amml-modmanager.git?tag=26.63.8#db14b4c7681ab89fb1f278326e690ff1ad71edd4"
 dependencies = [
  "amm-core",
  "amml-api 26.63.8 (git+https://github.com/Alaydriem/amml.git?tag=26.63.8)",
@@ -28,7 +29,8 @@ dependencies = [
 
 [[package]]
 name = "amm-client"
-version = "26.63.4"
+version = "26.63.8"
+source = "git+https://github.com/Alaydriem/amml-modmanager.git?tag=26.63.8#db14b4c7681ab89fb1f278326e690ff1ad71edd4"
 dependencies = [
  "amm-abi",
  "amm-core",
@@ -42,7 +44,8 @@ dependencies = [
 
 [[package]]
 name = "amm-core"
-version = "26.63.4"
+version = "26.63.8"
+source = "git+https://github.com/Alaydriem/amml-modmanager.git?tag=26.63.8#db14b4c7681ab89fb1f278326e690ff1ad71edd4"
 dependencies = [
  "amml-abi 26.63.8 (git+https://github.com/Alaydriem/amml.git?tag=26.63.8)",
  "amml-api 26.63.8 (git+https://github.com/Alaydriem/amml.git?tag=26.63.8)",
@@ -68,6 +71,7 @@ source = "git+https://github.com/Alaydriem/amml.git?tag=26.63.8#2543926489819747
 [[package]]
 name = "amml-api"
 version = "26.63.8"
+source = "git+https://github.com/Alaydriem/amml.git?tag=26.63.8#2543926489819747570600eba343985e74b327ae"
 dependencies = [
  "amml-abi 26.63.8",
  "amml-runtime 26.63.8",
@@ -109,6 +113,7 @@ dependencies = [
 [[package]]
 name = "amml-derive"
 version = "26.63.8"
+source = "git+https://github.com/Alaydriem/amml.git?tag=26.63.8#2543926489819747570600eba343985e74b327ae"
 dependencies = [
  "amml-data 26.63.8",
  "clap",
@@ -138,6 +143,7 @@ dependencies = [
 [[package]]
 name = "amml-runtime"
 version = "26.63.8"
+source = "git+https://github.com/Alaydriem/amml.git?tag=26.63.8#2543926489819747570600eba343985e74b327ae"
 dependencies = [
  "amml-abi 26.63.8",
  "amml-data 26.63.8",
