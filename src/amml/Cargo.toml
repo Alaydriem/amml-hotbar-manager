@@ -14,21 +14,22 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 hotbar-manager-core.workspace = true
-amml-sdk.workspace = true
-amml-game.workspace = true
-amml-msvc.workspace = true
-amm-abi.workspace = true
+amml-api.workspace = true
 amm-client.workspace = true
 amm-core.workspace = true
-curia.workspace = true
-hcl-rs.workspace = true
 
 [dev-dependencies]
+amml-api = { workspace = true, features = ["test"] }
 amm-client = { workspace = true, features = ["test-support"] }
+hcl-rs.workspace = true
 
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+[[example]]
+name = "write_manifest"
+path = "examples/write_manifest.rs"
 
 [lints]
 workspace = true

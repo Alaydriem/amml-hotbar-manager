@@ -1,7 +1,7 @@
 use hotbar_manager_core::services::{ItemFilter, PLAYER_MAIN, SlotModel, SortStepper, SortTick, StepPlanner};
 use hotbar_manager_core::structs::{ButtonAction, ScreenKind, ScreenStep, Side, SlotAddr, SlotItem};
 
-use crate::game::ScreenActions;
+use crate::traits::ScreenActions;
 use crate::traits::ScreenSource;
 
 // why an action did nothing

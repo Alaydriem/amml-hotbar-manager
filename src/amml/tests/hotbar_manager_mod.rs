@@ -1,410 +1,608 @@
-use std::path::Path;
-
 use alaydriem_hotbar_manager::HotbarManagerMod;
-use alaydriem_hotbar_manager::services::{ButtonPainter, HotbarRuntime};
 use amm_client::test_support::FakeTable;
-use amml_sdk::{AmmlMod, SdkError};
+use amml_api::amml_abi::{AmmlInputMode, AmmlRequestOutcome, ClientTick, InventoryRequestDone, UiPointer};
+use amml_api::testing::{FakeGame, FakeInventory, FakeItem, FakeScreen};
+use amml_api::{Area, InputMode, Point, RequestOptions, Screen, ScreenKind, TextureReload, UiProfile, ViewId};
 
-use alaydriem_hotbar_manager::game::TopScreen;
-use alaydriem_hotbar_manager::traits::GameHost;
-use alaydriem_hotbar_manager::types::{ButtonCalls, ContainerCalls, PlayerCalls, RotationCalls, ScreenCalls};
-use hotbar_manager_core::structs::Direction;
+use crate::support::hotbar_rig::{HotbarRig, ROTATE_DOWN, ROTATE_UP, SORT, item, screen};
+use crate::support::screen_applier::ScreenApplier;
 
-use crate::support::fake_host::FakeHost;
+const VIEW: u64 = 11;
+const SECOND_VIEW: u64 = 12;
+const SCREEN: u64 = 5;
+// the centre of the drop-filtered button of the player inventory: the panel is at (200, 100), the button at (0, -15)
+// with 30 by 15 units
+const DROP_FILTERED: (f32, f32) = (215.0, 92.5);
 
-fn runtime() -> HotbarRuntime {
-    HotbarRuntime::new(Path::new(FakeTable::CONFIG_DIR))
+fn inventory_screen() -> FakeScreen {
+    screen(ScreenKind::PlayerInventory, 0)
 }
 
-#[test]
-fn the_mod_id_is_the_namespaced_id_and_amml_hcl_names_the_same_parts() {
-    let document: hcl::Value = hcl::from_str(include_str!("../amml.hcl")).unwrap();
-    let hcl::Value::Object(map) = document else { panic!("the document is not an object") };
-
-    assert_eq!(HotbarManagerMod::id(), "@alaydriem/hotbar-manager");
-    assert_eq!(HotbarManagerMod::id(), HotbarManagerMod::MODULE);
-    assert_eq!(map.get("namespace").and_then(hcl::Value::as_str), Some(HotbarManagerMod::NAMESPACE));
-    assert_eq!(map.get("name").and_then(hcl::Value::as_str), Some(HotbarManagerMod::NAME));
-}
-
-// every entry the mod resolves, each with a fake value
-fn all_entries() -> Vec<(&'static str, u64)> {
-    HotbarManagerMod::entries().into_iter().zip(0x1000..).collect()
-}
-
-const BUTTON_HOOKS: [&str; 2] = [HotbarManagerMod::BUTTON_EVENT, HotbarManagerMod::SCREEN_RENDER];
-const ROTATION_HOOKS: [&str; 2] = [HotbarManagerMod::CONTAINER_OPEN, HotbarManagerMod::CONTAINER_CLOSE];
-
-#[test]
-fn enable_hooks_the_client_update_the_stack_response_the_two_button_hooks_and_the_two_container_hooks() {
-    let host = FakeHost::new(&all_entries());
-
-    HotbarManagerMod::enable_with(&host, &runtime()).unwrap();
-
-    assert_eq!(
-        host.hooked(),
-        [
-            HotbarManagerMod::UPDATE,
-            HotbarManagerMod::STACK_RESPONSE,
-            HotbarManagerMod::BUTTON_EVENT,
-            HotbarManagerMod::SCREEN_RENDER,
-            ROTATION_HOOKS[0],
-            ROTATION_HOOKS[1],
-        ]
-    );
-    assert!(host.warnings().is_empty());
-}
-
-#[test]
-fn the_stack_response_hook_goes_on_the_handler_slot_of_the_network_handler_vtable() {
-    let host = FakeHost::new(&all_entries());
-
-    HotbarManagerMod::enable_with(&host, &runtime()).unwrap();
-
-    let table = host.resolve(HotbarManagerMod::NETWORK_HANDLER_VTABLE).unwrap();
-    let slot = host.resolve(HotbarManagerMod::STACK_RESPONSE).unwrap();
-    assert_eq!(host.hooked_targets()[1], FakeHost::table_target(table, slot));
-}
-
-#[test]
-fn enable_without_the_move_entries_keeps_the_client_update_and_turns_the_moves_off() {
-    let host = FakeHost::new(&[(HotbarManagerMod::UPDATE, 0x1000)]);
-    let runtime = runtime();
-
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
-
-    assert_eq!(host.hooked(), [HotbarManagerMod::UPDATE]);
-    assert!(host.warnings().iter().any(|line| line.contains(HotbarManagerMod::STACK_RESPONSE)));
-    assert!(!runtime.moves_ready());
-}
-
-#[test]
-fn enable_with_every_entry_makes_the_moves_ready() {
-    let host = FakeHost::new(&all_entries());
-    let runtime = runtime();
-
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
-
-    assert!(runtime.moves_ready());
-}
-
-#[test]
-fn amml_hcl_lists_every_entry_the_mod_resolves() {
-    let document: hcl::Value = hcl::from_str(include_str!("../amml.hcl")).unwrap();
-    let listed: Vec<&str> = document
-        .as_object()
-        .and_then(|map| map.get("entries"))
-        .and_then(hcl::Value::as_array)
-        .unwrap()
-        .iter()
-        .filter_map(hcl::Value::as_str)
-        .collect();
-
-    for entry in HotbarManagerMod::entries() {
-        assert!(listed.contains(&entry), "{entry} is not in amml.hcl");
+// a small chest whose container holds `stacks`, in order from slot 0
+fn chest_with(stacks: &[(&'static str, u8, u64)]) -> FakeScreen {
+    let mut chest = screen(ScreenKind::SmallChest, 27);
+    for (slot, (name, count, identity)) in stacks.iter().enumerate() {
+        chest.slots.container[slot] = item(name, *count, *identity);
     }
+    chest
+}
+
+fn names(chest: &FakeScreen) -> Vec<&'static str> {
+    chest.slots.container.iter().flatten().map(|stack| stack.type_name).collect()
+}
+
+fn hover(mut fake: FakeScreen, at: (f32, f32)) -> FakeScreen {
+    fake.pointer = Some(Point { x: at.0, y: at.1 });
+    fake
 }
 
 #[test]
-fn enable_fails_without_the_client_update_entry() {
-    let host = FakeHost::new(&[]);
+fn the_mod_enables_with_every_required_row_served() {
+    let rig = HotbarRig::new();
 
-    let result = HotbarManagerMod::enable_with(&host, &runtime());
-
-    assert!(matches!(result, Err(SdkError::MissingEntry(_))));
-    assert!(host.hooked().is_empty());
-}
-
-fn every_entry_but(missing: &[&str]) -> Vec<(&'static str, u64)> {
-    all_entries().into_iter().filter(|(entry, _)| !missing.contains(entry)).collect()
+    assert!(rig.game.missing_required().is_empty(), "{:?}", rig.game.missing_required());
 }
 
 #[test]
-fn a_missing_response_hook_means_no_moves_start() {
-    let host = FakeHost::new(&every_entry_but(&[HotbarManagerMod::STACK_RESPONSE]));
-    let runtime = runtime();
+fn enable_fails_while_a_required_area_is_not_served() {
+    let game = HotbarRig::offered();
+    game.withdraw_area(Area::INVENTORY_REQUEST);
+    FakeTable::provide(&game.ctx()).unwrap();
+    game.load::<HotbarManagerMod>().unwrap();
 
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
-
-    assert_eq!(
-        host.hooked(),
-        [HotbarManagerMod::UPDATE, BUTTON_HOOKS[0], BUTTON_HOOKS[1], ROTATION_HOOKS[0], ROTATION_HOOKS[1]]
-    );
-    assert!(!runtime.moves_ready());
-    assert!(runtime.rotation_blocked().is_some());
+    assert!(game.enable::<HotbarManagerMod>().is_err());
 }
 
 #[test]
-fn the_moves_are_ready_when_every_entry_is_there() {
-    let host = FakeHost::new(&all_entries());
-    let runtime = runtime();
+fn the_link_to_the_manager_is_logged_once_at_a_tick() {
+    let rig = HotbarRig::new();
+    rig.tick();
+    rig.tick();
 
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
-
-    assert!(runtime.moves_ready());
+    assert_eq!(rig.count_logged("info hotbar linked"), 1);
 }
 
 #[test]
-fn an_optional_hook_that_does_not_go_in_turns_off_only_the_moves() {
-    let host = FakeHost::new(&all_entries()).failing_hooks(&[HotbarManagerMod::STACK_RESPONSE]);
-    let runtime = runtime();
+fn disable_removes_the_listeners_and_leaves_the_manager() {
+    let rig = HotbarRig::new();
 
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.game.disable::<HotbarManagerMod>();
+    let before = rig.game.logs().len();
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &inventory_screen());
 
-    assert_eq!(
-        host.hooked(),
-        [HotbarManagerMod::UPDATE, BUTTON_HOOKS[0], BUTTON_HOOKS[1], ROTATION_HOOKS[0], ROTATION_HOOKS[1]]
-    );
-    assert!(runtime.buttons_ready());
-    assert!(host.warnings().iter().any(|line| line.contains(HotbarManagerMod::STACK_RESPONSE)));
-    assert!(!runtime.moves_ready());
+    assert_eq!(rig.game.logs().len(), before);
+    assert!(rig.game.draws().is_empty());
+    assert!(FakeTable::calls().contains(&"unregister"));
+}
+
+// --- buttons ---
+
+#[test]
+fn the_buttons_of_the_player_inventory_are_drawn_once_their_textures_are_ready() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    assert!(rig.game.draws().is_empty(), "a texture that is not ready is skipped");
+    assert_eq!(rig.game.textures().loads().len(), 11);
+    rig.textures_ready(1..=11, 0);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+
+    // two buttons, each with 9 state pieces, 9 border pieces and one glyph
+    assert_eq!(rig.game.draws().len(), 2 * 19);
+    assert!(rig.game.draws().iter().all(|line| line.starts_with("image ")));
 }
 
 #[test]
-fn a_failed_required_hook_still_fails_enable() {
-    let host = FakeHost::new(&all_entries()).failing_hooks(&[HotbarManagerMod::UPDATE]);
+fn the_first_frame_logs_the_kind_and_where_each_button_sits() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
 
-    assert!(HotbarManagerMod::enable_with(&host, &runtime()).is_err());
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    rig.render(VIEW, SCREEN, &inventory_screen());
+
+    assert!(rig.logged("info buttons drawn kind=PlayerInventory profile=Classic buttons=2"));
+    assert!(rig.logged("info button placed kind=PlayerInventory action=DropFiltered rx=0.3359 ry=0.2569"));
+    assert_eq!(rig.count_logged("info buttons drawn"), 1);
 }
 
 #[test]
-fn without_the_inventory_offset_entries_the_moves_run_and_nothing_is_predicted() {
-    for missing in [PlayerCalls::INVENTORY, PlayerCalls::ITEMS] {
-        let host = FakeHost::new(&every_entry_but(&[missing]));
-        let runtime = runtime();
+fn the_textures_are_asked_for_once_and_logged_when_ready() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    assert_eq!(rig.game.textures().loads().len(), 11);
+    assert_eq!(rig.count_logged("info textures ready"), 0);
 
-        HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.textures_ready(1..=11, 0);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    rig.render(VIEW, SCREEN, &inventory_screen());
 
-        assert!(runtime.moves_ready());
-        assert!(!runtime.with_moves(|engine| engine.predictor().bound()), "{missing}");
-        assert!(host.warnings().iter().any(|line| line.contains(missing)), "{missing}");
+    assert_eq!(rig.count_logged("info textures ready count=11 paints="), 1);
+    assert_eq!(rig.game.textures().loads().len(), 11);
+}
+
+#[test]
+fn the_pocket_profile_has_no_buttons() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    let mut pocket = inventory_screen();
+    pocket.ui_profile = Some(UiProfile::Pocket);
+
+    rig.render(VIEW, SCREEN, &pocket);
+
+    assert!(rig.game.draws().is_empty());
+    assert!(rig.game.textures().loads().is_empty());
+    assert!(rig.game.ui_pointer(ViewId(VIEW), 0, true, DROP_FILTERED.0, DROP_FILTERED.1));
+}
+
+#[test]
+fn a_frame_the_game_left_images_queued_in_draws_nothing_and_keeps_the_layout() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    rig.textures_ready(1..=11, 0);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    let drawn = rig.game.draws().len();
+
+    let mut busy = inventory_screen();
+    busy.can_draw = false;
+    rig.render(VIEW, SCREEN, &busy);
+
+    assert_eq!(rig.game.draws().len(), drawn);
+    assert!(!rig.game.ui_pointer(ViewId(VIEW), 0, true, DROP_FILTERED.0, DROP_FILTERED.1));
+}
+
+#[test]
+fn a_stale_texture_set_is_asked_for_again_after_a_world_leave() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    rig.textures_ready(1..=11, 0);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+
+    rig.game.textures().leave_world();
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    assert_eq!(rig.count_logged("info button textures were stale"), 1);
+    assert_eq!(rig.game.textures().loads().len(), 11);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    assert_eq!(rig.game.textures().loads().len(), 22);
+    rig.textures_ready(12..=22, 1);
+    let before = rig.game.draws().len();
+    rig.render(VIEW, SCREEN, &inventory_screen());
+
+    assert_eq!(rig.game.draws().len() - before, 2 * 19);
+}
+
+#[test]
+fn a_device_reset_asks_for_the_texture_set_again_and_logs_ready_again() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    rig.textures_ready(1..=11, 0);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    assert_eq!(rig.count_logged("info textures ready"), 1);
+
+    rig.game.raise_textures_reloaded(TextureReload::DeviceReset);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+
+    assert!(rig.logged("info textures reloaded reason=device_reset held=11"));
+    assert_eq!(rig.count_logged("info button textures were stale"), 0);
+    assert_eq!(rig.game.textures().loads().len(), 22);
+    rig.textures_ready(12..=22, 1);
+    let before = rig.game.draws().len();
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    assert_eq!(rig.game.draws().len() - before, 2 * 19);
+    assert_eq!(rig.count_logged("info textures ready"), 2);
+}
+
+#[test]
+fn a_resource_pack_change_keeps_the_set_and_logs_ready_again() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    rig.textures_ready(1..=11, 0);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+
+    rig.game.raise_textures_reloaded(TextureReload::ResourcePack);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+
+    assert!(rig.logged("info textures reloaded reason=resource_pack held=11"));
+    assert_eq!(rig.game.textures().loads().len(), 11);
+    assert_eq!(rig.count_logged("info textures ready"), 2);
+}
+
+#[test]
+fn a_reload_before_any_paint_holds_nothing() {
+    let rig = HotbarRig::new();
+
+    rig.game.raise_textures_reloaded(TextureReload::DeviceReset);
+
+    assert!(rig.logged("info textures reloaded reason=device_reset held=0"));
+    assert!(rig.game.textures().loads().is_empty());
+}
+
+// --- clicks ---
+
+#[test]
+fn a_press_and_release_on_a_button_is_taken_and_runs_the_action_at_the_next_frame() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    let mut fake = hover(inventory_screen(), DROP_FILTERED);
+    fake.cursor = item("minecraft:stone", 5, 1);
+    fake.slots.inventory[2] = item("minecraft:stone", 20, 1);
+    fake.slots.inventory[3] = item("minecraft:dirt", 20, 2);
+    rig.render(VIEW, SCREEN, &fake);
+    let view = ViewId(VIEW);
+
+    let down = rig.game.ui_pointer(view, 0, true, DROP_FILTERED.0, DROP_FILTERED.1);
+    let up = rig.game.ui_pointer(view, 0, false, DROP_FILTERED.0, DROP_FILTERED.1);
+
+    assert!(!down && !up, "the game gets neither the press nor the release");
+    assert!(rig.logged("info pointer taken action=DropFiltered"));
+    assert!(rig.game.screen_actions().is_empty(), "nothing is called outside a render");
+    rig.render(VIEW, SCREEN, &fake);
+    assert!(rig.logged("info action done action=DropFiltered calls=2"), "{:?}", rig.game.logs());
+    assert_eq!(rig.game.screen_actions(), ["drop_cursor whole", "drop_slot inventory 2 whole"]);
+}
+
+#[test]
+fn a_release_off_the_button_does_nothing_but_is_still_swallowed() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    let fake = hover(inventory_screen(), DROP_FILTERED);
+    rig.render(VIEW, SCREEN, &fake);
+    let view = ViewId(VIEW);
+
+    assert!(!rig.game.ui_pointer(view, 0, true, DROP_FILTERED.0, DROP_FILTERED.1));
+    assert!(!rig.game.ui_pointer(view, 0, false, 300.0, 300.0));
+
+    assert_eq!(rig.count_logged("info pointer taken"), 0);
+    assert_eq!(rig.count_logged("info action"), 0);
+}
+
+#[test]
+fn a_click_beside_the_buttons_goes_to_the_game() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    let view = ViewId(VIEW);
+
+    assert!(rig.game.ui_pointer(view, 0, true, 300.0, 200.0));
+    assert!(rig.game.ui_pointer(view, 0, false, 300.0, 200.0));
+}
+
+#[test]
+fn a_click_on_another_view_of_the_screen_goes_to_the_game() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    let mut blank = inventory_screen();
+    blank.kind = ScreenKind::Other;
+    rig.render(SECOND_VIEW, SCREEN, &blank);
+    let view = ViewId(SECOND_VIEW);
+
+    assert!(rig.game.ui_pointer(view, 0, true, DROP_FILTERED.0, DROP_FILTERED.1));
+    assert!(rig.game.ui_pointer(view, 0, false, DROP_FILTERED.0, DROP_FILTERED.1));
+}
+
+#[test]
+fn a_gamepad_press_over_a_button_goes_to_the_game() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &inventory_screen());
+    let mut event = UiPointer {
+        header: FakeGame::header::<UiPointer>(),
+        screen: SCREEN,
+        view: VIEW,
+        pointer: 0,
+        pressed: 1,
+        input_mode: AmmlInputMode::from(InputMode::GamePad).0,
+        _reserved: 0,
+        x: DROP_FILTERED.0,
+        y: DROP_FILTERED.1,
+        _reserved2: 0,
+    };
+
+    let dispatch = rig.game.raise_with_client(&mut event);
+
+    assert!(!dispatch.cancelled);
+}
+
+// --- screen actions ---
+
+#[test]
+fn the_sort_key_sorts_a_chest_one_step_per_tick() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    let mut chest =
+        chest_with(&[("minecraft:stone", 10, 1), ("minecraft:dirt", 10, 2), ("minecraft:cobblestone", 10, 3)]);
+
+    rig.press(SORT);
+    let mut seen = 0;
+    for _ in 0..60 {
+        // the second view of the same screen takes no second step in the tick
+        rig.render(VIEW, SCREEN, &chest);
+        let first = rig.game.screen_actions().len();
+        rig.render(SECOND_VIEW, SCREEN, &chest);
+        assert_eq!(rig.game.screen_actions().len(), first, "a second view took a step in the same tick");
+        ScreenApplier::apply(&mut chest, &rig.game.screen_actions()[seen..]);
+        seen = first;
+        if rig.count_logged("info sort done") > 0 {
+            break;
+        }
+        rig.tick();
     }
+
+    assert_eq!(rig.count_logged("info sort started action=Sort"), 1);
+    assert_eq!(rig.count_logged("info sort done"), 1, "{:?}", rig.game.logs());
+    assert_eq!(names(&chest), ["minecraft:cobblestone", "minecraft:dirt", "minecraft:stone"]);
 }
 
 #[test]
-fn with_every_entry_the_player_prediction_is_bound() {
-    let host = FakeHost::new(&all_entries());
-    let runtime = runtime();
+fn a_sort_key_over_the_hud_is_ignored() {
+    let rig = HotbarRig::new();
 
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.press(SORT);
 
-    assert!(runtime.with_moves(|engine| engine.predictor().bound()));
+    assert!(rig.logged("info action ignored action=Sort reason=NoScreen"));
 }
 
 #[test]
-fn with_every_entry_the_buttons_are_bound() {
-    let host = FakeHost::new(&all_entries());
-    let runtime = runtime();
+fn a_dump_runs_all_its_steps_in_its_first_frame() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    // the dump-from-container button is at (-15, 0) of the panel with 15 by 30 units
+    let at = (200.0 - 7.5, 115.0);
+    let chest = hover(chest_with(&[("minecraft:stone", 10, 1), ("minecraft:dirt", 10, 2)]), at);
+    rig.render(VIEW, SCREEN, &chest);
+    let view = ViewId(VIEW);
 
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.game.ui_pointer(view, 0, true, at.0, at.1);
+    rig.game.ui_pointer(view, 0, false, at.0, at.1);
+    rig.render(VIEW, SCREEN, &chest);
 
-    assert!(runtime.buttons_ready());
+    assert!(rig.logged("info action done action=DumpFromContainer calls=2"), "{:?}", rig.game.logs());
+    assert_eq!(rig.game.screen_actions(), ["auto_place container 0", "auto_place container 1"]);
 }
 
 #[test]
-fn without_the_input_mode_entry_the_buttons_are_bound_with_one_warning() {
-    let host = FakeHost::new(&every_entry_but(&[ButtonCalls::INPUT_MODE]));
-    let runtime = runtime();
+fn a_screen_changed_to_the_hud_stops_a_running_sort() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    let chest = chest_with(&[("minecraft:stone", 10, 1), ("minecraft:dirt", 10, 2)]);
+    rig.press(SORT);
+    rig.render(VIEW, SCREEN, &chest);
+    assert_eq!(rig.count_logged("info sort started"), 1);
 
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.changed(SCREEN, 1, Screen::Hud);
 
-    assert!(runtime.buttons_ready());
-    let warnings = host.warnings();
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(warnings[0].contains(ButtonCalls::INPUT_MODE), "{warnings:?}");
+    assert_eq!(rig.count_logged("info sort stopped steps=1 reason=the screen closed or changed"), 1);
 }
 
 #[test]
-fn a_missing_button_entry_turns_off_only_the_buttons() {
-    for missing in [ButtonCalls::DRAW_IMAGE, ButtonCalls::POINTER_BUTTON_IDS, ScreenCalls::CONTROL_NAME] {
-        let host = FakeHost::new(&every_entry_but(&[missing]));
-        let runtime = runtime();
+fn a_screen_change_is_logged_with_the_top_screen() {
+    let rig = HotbarRig::new();
 
-        HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.changed(1, SCREEN, Screen::Container);
+    rig.changed(SCREEN, 1, Screen::Hud);
 
-        assert!(!runtime.buttons_ready(), "{missing}");
-        assert!(runtime.moves_ready(), "{missing}");
-        assert!(host.warnings().iter().any(|line| line.contains(missing)), "{missing}");
+    assert!(rig.logged("info screen changed screen=Container"));
+    assert!(rig.logged("info screen changed screen=Hud"));
+}
+
+#[test]
+fn a_close_seen_at_a_tick_drops_an_action_that_waits_for_a_frame() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    rig.press(SORT);
+
+    rig.show(Screen::Hud);
+    rig.show(Screen::Container);
+    rig.render(VIEW, SCREEN, &chest_with(&[("minecraft:stone", 10, 1)]));
+
+    assert_eq!(rig.count_logged("info sort started"), 0);
+}
+
+#[test]
+fn a_frame_of_another_screen_drops_the_running_sort() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    let chest = chest_with(&[("minecraft:stone", 10, 1), ("minecraft:dirt", 10, 2)]);
+    rig.press(SORT);
+    rig.render(VIEW, SCREEN, &chest);
+    assert_eq!(rig.count_logged("info sort started"), 1);
+
+    rig.render(VIEW, SCREEN + 1, &chest);
+
+    assert_eq!(rig.count_logged("info sort stopped steps=1 reason=the screen closed or changed"), 1);
+}
+
+#[test]
+fn a_container_that_cannot_be_read_stops_the_sort_with_a_warning() {
+    let rig = HotbarRig::new();
+    rig.show(Screen::Container);
+    let chest = chest_with(&[("minecraft:stone", 10, 1), ("minecraft:dirt", 10, 2)]);
+    rig.press(SORT);
+    rig.render(VIEW, SCREEN, &chest);
+    rig.tick();
+    // a small chest whose container list has the wrong length cannot be planned on
+    let mut broken = chest.clone();
+    broken.slots.container.truncate(5);
+
+    rig.render(VIEW, SCREEN, &broken);
+
+    assert_eq!(rig.count_logged("warn sort stopped"), 1, "{:?}", rig.game.logs());
+}
+
+// --- rotation ---
+
+fn rotation_inventory(slots: &[usize]) -> FakeInventory {
+    let mut inventory = FakeInventory { selected_slot: Some(0), ..FakeInventory::default() };
+    for slot in slots {
+        inventory.slots[*slot] = item("minecraft:stone", 4, *slot as u64 + 1);
     }
+    inventory
 }
 
 #[test]
-fn the_buttons_are_off_unless_both_button_hooks_go_in() {
-    for failing in BUTTON_HOOKS {
-        let host = FakeHost::new(&all_entries()).failing_hooks(&[failing]);
-        let runtime = runtime();
+fn a_rotation_key_gives_the_loader_one_request_with_a_hidden_open_and_a_prediction() {
+    let rig = HotbarRig::new();
+    rig.game.set_inventory(rotation_inventory(&(0..36).collect::<Vec<_>>()));
 
-        HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.press(ROTATE_DOWN);
 
-        assert!(!runtime.buttons_ready(), "{failing}");
-        assert!(host.hooked().contains(&HotbarManagerMod::UPDATE), "{failing}");
-    }
-    for missing in BUTTON_HOOKS {
-        let host = FakeHost::new(&every_entry_but(&[missing]));
-        let runtime = runtime();
-
-        HotbarManagerMod::enable_with(&host, &runtime).unwrap();
-
-        assert!(!runtime.buttons_ready(), "{missing}");
-    }
+    let requests = rig.game.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].1.len(), 27);
+    assert_eq!(requests[0].2, RequestOptions { hidden_open: true, predict: true });
 }
 
 #[test]
-fn the_textures_folder_holds_every_glyph_the_painter_loads() {
-    for glyph in ButtonPainter::GLYPHS {
-        let file = format!("{}/textures/{}.png", env!("CARGO_MANIFEST_DIR"), ButtonPainter::glyph_file(glyph));
-        assert!(Path::new(&file).is_file(), "{file} is missing");
-    }
+fn the_rotation_ends_with_the_answer_of_its_request() {
+    let rig = HotbarRig::new();
+    rig.game.set_inventory(rotation_inventory(&[0, 1, 2]));
+    rig.press(ROTATE_UP);
+    let (id, moves, _) = rig.game.requests().remove(0);
+
+    rig.game.answer(id, u16::try_from(moves.len()).unwrap());
+    rig.game.frame();
+
+    assert!(rig.logged(&format!("info rotation done moves={}", moves.len())), "{:?}", rig.game.logs());
 }
 
 #[test]
-fn without_the_image_queue_entry_the_buttons_are_bound_with_one_warning() {
-    let host = FakeHost::new(&every_entry_but(&[ButtonCalls::QUEUED_IMAGES]));
-    let runtime = runtime();
+fn a_refused_move_logs_an_early_end() {
+    let rig = HotbarRig::new();
+    rig.game.set_inventory(rotation_inventory(&[0, 1, 2]));
+    rig.press(ROTATE_UP);
+    let (id, _, _) = rig.game.requests().remove(0);
 
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.game.answer(id, 1);
+    rig.game.frame();
 
-    assert!(runtime.buttons_ready());
-    let warnings = host.warnings();
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(warnings[0].contains(ButtonCalls::QUEUED_IMAGES), "{warnings:?}");
+    assert_eq!(rig.count_logged("warn the row rotation ended early"), 1);
+    assert_eq!(rig.count_logged("info rotation done"), 0);
 }
 
 #[test]
-fn the_optional_button_entries_resolve_to_none_when_missing_and_to_their_value_when_present() {
-    let calls = ButtonCalls::resolve(&FakeHost::new(&all_entries())).unwrap();
-    let host = FakeHost::new(&all_entries());
-    assert_eq!(calls.queued_images, host.resolve(ButtonCalls::QUEUED_IMAGES).ok());
-    assert_eq!(calls.input_mode, host.resolve(ButtonCalls::INPUT_MODE).ok());
+fn a_second_rotation_key_waits_for_the_first_request() {
+    let rig = HotbarRig::new();
+    rig.game.set_inventory(rotation_inventory(&[0, 1, 2]));
+    rig.press(ROTATE_UP);
 
-    let partial = every_entry_but(&[ButtonCalls::QUEUED_IMAGES, ButtonCalls::INPUT_MODE]);
-    let calls = ButtonCalls::resolve(&FakeHost::new(&partial)).unwrap();
-    assert_eq!((calls.queued_images, calls.input_mode), (None, None));
+    rig.press(ROTATE_DOWN);
+
+    assert_eq!(rig.game.requests().len(), 1);
+    assert!(rig.logged("info rotation ignored reason=busy"));
 }
 
 #[test]
-fn the_container_hooks_go_on_the_handler_slots_of_the_network_handler_vtable() {
-    let host = FakeHost::new(&all_entries());
+fn the_request_done_of_another_request_does_not_end_the_rotation() {
+    let rig = HotbarRig::new();
+    rig.game.set_inventory(rotation_inventory(&[0, 1, 2]));
+    rig.press(ROTATE_UP);
+    let (id, moves, _) = rig.game.requests().remove(0);
+    let mut other = InventoryRequestDone {
+        header: FakeGame::header::<InventoryRequestDone>(),
+        id: id.0 + 100,
+        outcome: AmmlRequestOutcome::DONE.0,
+        _reserved: 0,
+        accepted: 1,
+        total: 1,
+        _reserved2: 0,
+    };
 
-    HotbarManagerMod::enable_with(&host, &runtime()).unwrap();
+    rig.game.raise(&mut other);
+    rig.press(ROTATE_DOWN);
 
-    let table = host.resolve(HotbarManagerMod::NETWORK_HANDLER_VTABLE).unwrap();
-    for (offset, entry) in ROTATION_HOOKS.into_iter().enumerate() {
-        let slot = host.resolve(entry).unwrap();
-        assert_eq!(host.hooked_targets()[4 + offset], FakeHost::table_target(table, slot), "{entry}");
-    }
+    assert_eq!(rig.count_logged("info rotation done"), 0);
+    assert!(rig.logged("info rotation ignored reason=busy"));
+    rig.game.answer(id, u16::try_from(moves.len()).unwrap());
+    rig.game.frame();
+    assert_eq!(rig.count_logged("info rotation done"), 1);
 }
 
 #[test]
-fn without_the_inventory_offset_entries_the_rotation_is_off_and_names_them() {
-    for missing in [PlayerCalls::INVENTORY, PlayerCalls::ITEMS] {
-        let host = FakeHost::new(&every_entry_but(&[missing]));
-        let runtime = runtime();
+fn a_request_a_screen_cancelled_is_logged_as_a_cancel_and_frees_the_rotation() {
+    let rig = HotbarRig::new();
+    rig.game.set_inventory(rotation_inventory(&[0, 1, 2]));
+    rig.press(ROTATE_UP);
+    let (id, _, _) = rig.game.requests().remove(0);
+    let mut cancelled = InventoryRequestDone {
+        header: FakeGame::header::<InventoryRequestDone>(),
+        id: id.0,
+        outcome: AmmlRequestOutcome::CANCELLED.0,
+        _reserved: 0,
+        accepted: 0,
+        total: 3,
+        _reserved2: 0,
+    };
 
-        HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.game.raise(&mut cancelled);
 
-        let reason = runtime.rotation_blocked().unwrap();
-        assert!(reason.contains(missing), "{reason}");
-    }
+    assert_eq!(rig.count_logged("info the row rotation was cancelled"), 1);
+    assert_eq!(rig.count_logged("warn"), 0);
+    rig.game.answer(id, 3);
+    rig.press(ROTATE_DOWN);
+    assert_eq!(rig.count_logged("info rotation ignored reason=busy"), 0);
 }
 
 #[test]
-fn without_the_runtime_id_or_the_top_screen_entry_the_rotation_is_off_and_names_it() {
-    for missing in [RotationCalls::GET_RUNTIME_ID, TopScreen::ENTRY] {
-        let host = FakeHost::new(&every_entry_but(&[missing]));
-        let runtime = runtime();
+fn a_rotation_key_with_a_screen_open_does_nothing() {
+    let rig = HotbarRig::new();
+    rig.game.set_inventory(rotation_inventory(&[0, 1, 2]));
+    rig.show(Screen::Container);
 
-        HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.press(ROTATE_UP);
 
-        let reason = runtime.rotation_blocked().unwrap();
-        assert!(reason.contains(missing), "{reason}");
-    }
+    assert!(rig.game.requests().is_empty());
+    assert!(rig.logged("info rotation ignored reason=screen_open"));
 }
 
 #[test]
-fn a_container_hook_that_does_not_go_in_turns_off_only_the_rotation() {
-    for entry in ROTATION_HOOKS {
-        let host = FakeHost::new(&all_entries()).failing_hooks(&[entry]);
-        let runtime = runtime();
+fn an_inventory_with_no_stack_logs_a_rotation_of_no_moves() {
+    let rig = HotbarRig::new();
+    rig.game.set_inventory(rotation_inventory(&[]));
 
-        HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+    rig.press(ROTATE_UP);
 
-        assert!(runtime.moves_ready());
-        assert!(runtime.buttons_ready());
-        assert!(runtime.rotation_blocked().unwrap().contains("is not hooked"));
-        assert!(host.warnings().iter().any(|line| line.contains(entry)));
-    }
+    assert!(rig.game.requests().is_empty());
+    assert!(rig.logged("info rotation done moves=0"));
 }
 
 #[test]
-fn disable_turns_the_rotation_off() {
-    let runtime = runtime();
-    HotbarManagerMod::enable_with(&FakeHost::new(&all_entries()), &runtime).unwrap();
+fn a_stack_the_loader_cannot_describe_stops_the_rotation_before_a_request() {
+    let rig = HotbarRig::new();
+    let mut inventory = rotation_inventory(&[0, 1]);
+    inventory.slots[1] = Some(FakeItem { max_count: None, ..inventory.slots[1].unwrap() });
+    rig.game.set_inventory(inventory);
 
-    runtime.bind_rotation(None, None);
-    runtime.stop_rotation();
+    rig.press(ROTATE_UP);
 
-    assert!(!runtime.rotation_active());
+    assert!(rig.game.requests().is_empty());
+    assert!(rig.logged("info rotation ignored reason=no_read"));
 }
 
 #[test]
-fn a_rotation_key_while_the_rotation_is_off_starts_nothing() {
-    let host = FakeHost::new(&every_entry_but(&[PlayerCalls::ITEMS]));
-    let runtime = runtime();
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
+fn a_sort_key_while_a_rotation_runs_is_ignored() {
+    let rig = HotbarRig::new();
+    rig.game.set_inventory(rotation_inventory(&[0, 1, 2]));
+    rig.press(ROTATE_UP);
+    rig.show(Screen::Container);
 
-    runtime.on_rotate(Direction::Down, 1.0);
-    runtime.on_rotate(Direction::Up, 1.0);
+    rig.press(SORT);
 
-    assert!(!runtime.rotation_active());
+    assert!(rig.logged("info action ignored action=Sort reason=Busy"));
 }
 
 #[test]
-fn the_mod_lists_every_container_entry() {
-    let document: hcl::Value = hcl::from_str(include_str!("../amml.hcl")).unwrap();
-    let listed: Vec<&str> = document
-        .as_object()
-        .and_then(|map| map.get("entries"))
-        .and_then(hcl::Value::as_array)
-        .unwrap()
-        .iter()
-        .filter_map(hcl::Value::as_str)
-        .collect();
+fn a_tick_without_a_client_does_not_panic() {
+    let rig = HotbarRig::new();
 
-    for entry in ContainerCalls::ENTRIES {
-        assert!(HotbarManagerMod::entries().contains(&entry), "{entry} is not in entries()");
-        assert!(listed.contains(&entry), "{entry} is not in amml.hcl");
-    }
-}
+    let dispatch = rig.game.raise(&mut ClientTick { header: FakeGame::header::<ClientTick>() });
 
-#[test]
-fn with_every_entry_the_screen_actions_are_bound() {
-    let host = FakeHost::new(&all_entries());
-    let runtime = runtime();
-
-    HotbarManagerMod::enable_with(&host, &runtime).unwrap();
-
-    assert!(runtime.screen_actions_ready());
-}
-
-#[test]
-fn a_missing_container_entry_turns_off_the_screen_actions_with_one_warning() {
-    for entry in ContainerCalls::ENTRIES {
-        let host = FakeHost::new(&every_entry_but(&[entry]));
-        let runtime = runtime();
-
-        HotbarManagerMod::enable_with(&host, &runtime).unwrap();
-
-        assert!(!runtime.screen_actions_ready(), "{entry}");
-        let warnings = host.warnings();
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert_eq!(warnings[0], format!("{entry} did not resolve; the screen actions (sort, dump, drop) are off"));
-    }
-}
-
-#[test]
-fn the_selected_hotbar_slot_is_no_longer_read() {
-    // the filtered buttons match the stack held on the cursor (2026-11-09); nothing reads PlayerInventory.mSelected
-    assert!(!HotbarManagerMod::entries().contains(&"PlayerInventory.mSelected"));
-    assert!(!include_str!("../amml.hcl").contains("PlayerInventory.mSelected"));
+    assert!(!dispatch.panicked);
 }

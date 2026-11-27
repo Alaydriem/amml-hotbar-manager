@@ -17,24 +17,24 @@ fn player(slot: u8) -> SlotAddr {
 // main 10, stone in main 20
 fn messy_chest() -> FakeScreen {
     let mut model = model(54);
-    model.container[0] = stack("dirt", 0, 10, 100);
-    model.container[1] = stack("cobblestone", 0, 20, 101);
-    model.container[2] = stack("stone", 0, 30, 102);
-    model.container[5] = stack("cobblestone", 0, 5, 103);
-    model.player[0] = stack("stone", 0, 8, 110);
-    model.player[3] = stack("cobblestone", 0, 9, 111);
-    model.player[10] = stack("cobblestone", 0, 12, 112);
-    model.player[20] = stack("stone", 0, 4, 113);
+    model.container[0] = stack("dirt", 0, 10);
+    model.container[1] = stack("cobblestone", 0, 20);
+    model.container[2] = stack("stone", 0, 30);
+    model.container[5] = stack("cobblestone", 0, 5);
+    model.player[0] = stack("stone", 0, 8);
+    model.player[3] = stack("cobblestone", 0, 9);
+    model.player[10] = stack("cobblestone", 0, 12);
+    model.player[20] = stack("stone", 0, 4);
     FakeScreen::new(ScreenKind::LargeChest, model)
 }
 
 fn inventory_screen() -> FakeScreen {
     let mut model = model(0);
-    model.player[0] = stack("stone", 0, 8, 110);
-    model.player[3] = stack("cobblestone", 0, 9, 111);
-    model.player[10] = stack("cobblestone", 0, 12, 112);
-    model.player[20] = stack("stone", 0, 4, 113);
-    model.player[21] = stack("stone", 1, 6, 114);
+    model.player[0] = stack("stone", 0, 8);
+    model.player[3] = stack("cobblestone", 0, 9);
+    model.player[10] = stack("cobblestone", 0, 12);
+    model.player[20] = stack("stone", 0, 4);
+    model.player[21] = stack("stone", 1, 6);
     FakeScreen::new(ScreenKind::PlayerInventory, model)
 }
 
@@ -84,9 +84,9 @@ fn a_dump_runs_every_step_in_its_first_frame() {
 fn every_dump_and_drop_runs_the_planned_steps() {
     // the filtered buttons match the stack held on the cursor: stone, aux 0
     let chest_screen = messy_chest();
-    chest_screen.hold(stack("stone", 0, 1, 120));
+    chest_screen.hold(stack("stone", 0, 1));
     let inventory = inventory_screen();
-    inventory.hold(stack("stone", 0, 1, 120));
+    inventory.hold(stack("stone", 0, 1));
     let stone = ItemFilter { id: "minecraft:stone".to_string(), aux: 0 };
     let cases = [
         (ButtonAction::DumpFromInventory, &chest_screen, None),
@@ -180,7 +180,7 @@ fn the_unfiltered_buttons_do_not_read_the_cursor() {
 fn a_filtered_dump_matches_the_held_stack_and_leaves_it_on_the_cursor() {
     // hotbar 0 holds stone (the old selected-slot filter); the cursor holds cobblestone: the cobblestone stacks move
     let screen = messy_chest();
-    screen.hold(stack("cobblestone", 0, 2, 120));
+    screen.hold(stack("cobblestone", 0, 2));
     let mut runner = FeatureRunner::new();
     let mut actions = FakeActions::recording();
 
@@ -196,7 +196,7 @@ fn a_filtered_dump_matches_the_held_stack_and_leaves_it_on_the_cursor() {
 #[test]
 fn drop_filtered_matches_the_aux_of_the_held_stack() {
     let screen = inventory_screen();
-    screen.hold(stack("stone", 1, 1, 120));
+    screen.hold(stack("stone", 1, 1));
     let mut runner = FeatureRunner::new();
     let mut actions = FakeActions::recording();
 
@@ -220,7 +220,7 @@ fn move_all_dumps_the_main_rows_then_the_hotbar() {
 #[test]
 fn drop_filtered_with_a_held_cursor_drops_it_first() {
     let screen = inventory_screen();
-    screen.hold(stack("cobblestone", 0, 3, 120));
+    screen.hold(stack("cobblestone", 0, 3));
     let mut runner = FeatureRunner::new();
     let mut actions = FakeActions::applying(&screen);
 
@@ -250,7 +250,7 @@ fn drop_all_drops_the_main_rows_and_never_the_hotbar() {
 #[test]
 fn a_dump_does_not_touch_a_held_cursor() {
     let screen = messy_chest();
-    screen.hold(stack("sand", 0, 3, 120));
+    screen.hold(stack("sand", 0, 3));
     let mut runner = FeatureRunner::new();
     let mut actions = FakeActions::recording();
 
@@ -344,7 +344,7 @@ fn sort_runs_one_step_per_frame_until_done() {
 #[test]
 fn sort_with_a_held_cursor_is_ignored() {
     let screen = messy_chest();
-    screen.hold(stack("sand", 0, 3, 120));
+    screen.hold(stack("sand", 0, 3));
     let mut runner = FeatureRunner::new();
     let mut actions = FakeActions::recording();
 
@@ -434,9 +434,9 @@ fn a_sort_that_cannot_read_the_screen_stops() {
 // with dirt, so the apple on the cursor has no room. The player slots in `filled` hold dirt too
 fn stuck_holding_the_apple(filled: &[u8]) -> (FakeScreen, FeatureRunner, Vec<ScreenStep>) {
     let mut start_model = model(2);
-    start_model.container[1] = stack("apple", 0, 5, 200);
+    start_model.container[1] = stack("apple", 0, 5);
     for &slot in filled {
-        start_model.player[usize::from(slot)] = stack("dirt", 0, 64, 300);
+        start_model.player[usize::from(slot)] = stack("dirt", 0, 64);
     }
     let screen = FakeScreen::new(ScreenKind::SmallChest, start_model);
     let mut runner = FeatureRunner::new();
@@ -447,8 +447,8 @@ fn stuck_holding_the_apple(filled: &[u8]) -> (FakeScreen, FeatureRunner, Vec<Scr
     {
         let mut shown = screen.model.borrow_mut();
         let shown = shown.as_mut().unwrap();
-        shown.container[0] = stack("dirt", 0, 64, 301);
-        shown.container[1] = stack("dirt", 0, 64, 302);
+        shown.container[0] = stack("dirt", 0, 64);
+        shown.container[1] = stack("dirt", 0, 64);
     }
 
     assert_eq!(runner.step_sort(&screen, &mut actions), Some(SortTick::Stuck));
@@ -491,14 +491,14 @@ fn with_no_empty_player_slot_the_stuck_stack_stays_on_the_cursor() {
 #[test]
 fn a_stack_the_sort_did_not_take_is_never_put_down() {
     let mut start_model = model(2);
-    start_model.container[1] = stack("apple", 0, 5, 200);
+    start_model.container[1] = stack("apple", 0, 5);
     let screen = FakeScreen::new(ScreenKind::SmallChest, start_model);
     let mut runner = FeatureRunner::new();
     let mut actions = FakeActions::applying(&screen);
     start(&mut runner, ButtonAction::Sort, &screen, &mut actions);
     runner.step_sort(&screen, &mut actions);
     // the game shows another stack on the cursor
-    screen.hold(stack("sand", 0, 7, 400));
+    screen.hold(stack("sand", 0, 7));
 
     assert_eq!(runner.step_sort(&screen, &mut actions), Some(SortTick::Stuck));
 
@@ -524,7 +524,7 @@ fn a_read_failure_with_an_empty_cursor_does_not_claim_a_held_stack() {
 #[test]
 fn a_read_failure_right_after_a_take_says_a_stack_may_be_held() {
     let mut start_model = model(2);
-    start_model.container[1] = stack("apple", 0, 5, 200);
+    start_model.container[1] = stack("apple", 0, 5);
     let screen = FakeScreen::new(ScreenKind::SmallChest, start_model);
     let mut runner = FeatureRunner::new();
     let mut actions = FakeActions::applying(&screen);
@@ -547,11 +547,11 @@ fn stop_sort_with_no_sort_gives_nothing() {
 #[test]
 fn drop_filtered_with_no_matching_slot_drops_only_the_held_stack() {
     let mut shown = model(0);
-    shown.player[0] = stack("stone", 0, 8, 110);
-    shown.player[12] = stack("stone", 0, 64, 111);
-    shown.player[30] = stack("stone", 0, 3, 112);
+    shown.player[0] = stack("stone", 0, 8);
+    shown.player[12] = stack("stone", 0, 64);
+    shown.player[30] = stack("stone", 0, 3);
     let screen = FakeScreen::new(ScreenKind::PlayerInventory, shown);
-    screen.hold(stack("apple", 0, 4, 120));
+    screen.hold(stack("apple", 0, 4));
     let mut runner = FeatureRunner::new();
     let mut actions = FakeActions::recording();
 

@@ -10,7 +10,6 @@ fn item(n: u64) -> SlotItem {
         count: 1 + (n % 60) as u8,
         max: 64,
         stack_key: n,
-        net_id: n as i32,
         mergeable: true,
     }
 }

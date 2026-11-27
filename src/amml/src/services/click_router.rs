@@ -1,11 +1,12 @@
+use amml_api::{InputMode, UiProfile};
 use hotbar_manager_core::services::ButtonLayout;
 use hotbar_manager_core::structs::{ButtonAction, ButtonSpec, PanelRect, ScreenKind};
 
-use crate::types::{ButtonLook, ClickRoute, InputMode, UiProfile};
+use crate::types::{ButtonLook, ClickRoute};
 
 // Decides which pointer events the mod buttons take (docs/findings/spike-click/report.md section 6). Pure: the
-// button event detour hands it the view, the pointer index (the place of the event's id in
-// `ScreenView::mPointerButtonIds`), the state, the button under the pointer and the input mode.
+// `UiPointer` listener hands it the view, the pointer index, the state, the button under the pointer and the input
+// mode.
 //
 // - One held flag per pointer index: the button its press began on, so its release is swallowed too.
 // - A new press of a pointer clears that pointer's stale flag first (its release was lost, for example after
@@ -14,9 +15,9 @@ use crate::types::{ButtonLook, ClickRoute, InputMode, UiProfile};
 // - The action fires on the release of the primary pointer (index 0) inside the button its press began on. A
 //   swallowed press always swallows its release, even off the button and in any input mode.
 // - A press is taken only in a pointer input mode; in gamepad mode the game sends it to the focused control.
-//   With no `ScreenView.mInputMode` entry the mode is None, and a press over a button is taken.
+//   With an `Unknown` mode a press over a button is taken.
 pub struct ClickRouter {
-    view: usize,
+    view: u64,
     held: [Option<ButtonAction>; Self::POINTERS],
 }
 
@@ -27,7 +28,7 @@ impl Default for ClickRouter {
 }
 
 impl ClickRouter {
-    // the length of `ScreenView::mPointerButtonIds` (`std::array<uint, 2>`)
+    // the pointer buttons of a view: the primary one and the second
     pub const POINTERS: usize = 2;
     // the pointer whose release fires an action (the left mouse button)
     pub const PRIMARY: usize = 0;
@@ -40,7 +41,8 @@ impl ClickRouter {
     pub fn buttons(kind: ScreenKind, profile: UiProfile) -> Vec<ButtonSpec> {
         match profile {
             UiProfile::Classic => ButtonLayout::for_screen(kind),
-            UiProfile::Pocket => Vec::new(),
+            // Pocket has no classic panel; a profile this crate does not name is treated alike
+            _ => Vec::new(),
         }
     }
 
@@ -57,8 +59,14 @@ impl ClickRouter {
             .map(|spec| spec.action)
     }
 
+    // whether a press goes to the control under the pointer. `Unknown` counts as a pointer mode: when the mode cannot
+    // be told, a press over a button is taken, so it never reaches a slot under it
+    pub fn uses_pointer(mode: InputMode) -> bool {
+        !matches!(mode, InputMode::GamePad | InputMode::MotionController)
+    }
+
     // the view the events come from; a different view clears every held flag
-    pub fn observe_view(&mut self, view: usize) {
+    pub fn observe_view(&mut self, view: u64) {
         if self.view != view {
             self.clear();
             self.view = view;
@@ -67,7 +75,7 @@ impl ClickRouter {
 
     // the view shows no buttons any more (its screen closed, or it turned into another screen); if it is the view
     // the flags belong to, they clear
-    pub fn forget_view(&mut self, view: usize) {
+    pub fn forget_view(&mut self, view: u64) {
         if self.view == view {
             self.clear();
         }
@@ -76,17 +84,17 @@ impl ClickRouter {
     // what happens to one pointer event of `view`
     pub fn route(
         &mut self,
-        view: usize,
+        view: u64,
         pointer: usize,
         pressed: bool,
         over: Option<ButtonAction>,
-        mode: Option<InputMode>,
+        mode: InputMode,
     ) -> ClickRoute {
         self.observe_view(view);
         let Some(held) = self.held.get_mut(pointer) else { return ClickRoute::Pass };
         if pressed {
             *held = None;
-            if !mode.is_none_or(InputMode::uses_pointer) {
+            if !Self::uses_pointer(mode) {
                 return ClickRoute::Pass;
             }
             return match over {
@@ -105,18 +113,18 @@ impl ClickRouter {
     }
 
     // whether a pointer holds a press that began on `view`
-    pub fn holds(&self, view: usize) -> bool {
+    pub fn holds(&self, view: u64) -> bool {
         view == self.view && self.held.iter().any(Option::is_some)
     }
 
     // the button drawn pressed on `view`: the one under the pointer, if a pointer holds it
-    pub fn pressed(&self, view: usize, over: Option<ButtonAction>) -> Option<ButtonAction> {
+    pub fn pressed(&self, view: u64, over: Option<ButtonAction>) -> Option<ButtonAction> {
         over.filter(|action| view == self.view && self.held.contains(&Some(*action)))
     }
 
     // the look of `action` on `view`: Pressed only when held and the pointer is inside, else Hover when inside, else
     // Default
-    pub fn look(&self, view: usize, action: ButtonAction, over: Option<ButtonAction>) -> ButtonLook {
+    pub fn look(&self, view: u64, action: ButtonAction, over: Option<ButtonAction>) -> ButtonLook {
         if over != Some(action) {
             ButtonLook::Default
         } else if self.pressed(view, over).is_some() {
